@@ -33,7 +33,7 @@ else()
     FetchContent_Declare(
         gauss_forge
         GIT_REPOSITORY https://github.com/3dgscloud/GaussForge.git
-        GIT_TAG        main
+        GIT_TAG        v0.5.4
     )
 endif()
 FetchContent_MakeAvailable(gauss_forge)
@@ -54,7 +54,41 @@ target_include_directories(nanoflann INTERFACE
 )
 
 # --------------------------------------------------------
-# 4. Simplify library
+# 4. Compilation options optimization
+# --------------------------------------------------------
+if(MSVC)
+    add_compile_options(/W3)
+    if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+        add_definitions(-DDEBUG_BUILD)
+    else()
+        add_definitions(-DRELEASE_BUILD)
+        add_compile_options(/O2 /GL)
+        set(CMAKE_EXE_LINKER_FLAGS_RELEASE "${CMAKE_EXE_LINKER_FLAGS_RELEASE} /OPT:REF /OPT:ICF /LTCG")
+        set(CMAKE_STATIC_LINKER_FLAGS_RELEASE "${CMAKE_STATIC_LINKER_FLAGS_RELEASE} /LTCG")
+    endif()
+
+    # Enable sccache if available
+    find_program(SCCACHE_PROGRAM sccache)
+    if(SCCACHE_PROGRAM)
+        set(CMAKE_C_COMPILER_LAUNCHER "${SCCACHE_PROGRAM}")
+        set(CMAKE_CXX_COMPILER_LAUNCHER "${SCCACHE_PROGRAM}")
+    endif()
+else()
+    if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+        add_definitions(-DDEBUG_BUILD)
+    else()
+        add_definitions(-DRELEASE_BUILD)
+        # GCC/Clang Release optimizations
+        add_compile_options(-O3 -flto -funroll-loops -fomit-frame-pointer -ftree-vectorize)
+
+        if(NOT EMSCRIPTEN)
+            add_compile_options(-march=native)
+        endif()
+    endif()
+endif()
+
+# --------------------------------------------------------
+# 5. Simplify library
 # --------------------------------------------------------
 add_library(gauss_simplify_lib STATIC
     src/simplify.cpp
@@ -72,7 +106,7 @@ if(NOT EMSCRIPTEN AND OpenMP_CXX_FOUND)
 endif()
 
 # --------------------------------------------------------
-# 5. CLI executable (not built for WASM)
+# 6. CLI executable (not built for WASM)
 # --------------------------------------------------------
 if(NOT EMSCRIPTEN)
     add_executable(gauss_simplify src/main.cpp)
@@ -80,14 +114,14 @@ if(NOT EMSCRIPTEN)
 endif()
 
 # --------------------------------------------------------
-# 6. Benchmarks (not built for WASM)
+# 7. Benchmarks (not built for WASM)
 # --------------------------------------------------------
 if(NOT EMSCRIPTEN)
     add_subdirectory(benchmarks)
 endif()
 
 # --------------------------------------------------------
-# 7. Tests
+# 8. Tests
 # --------------------------------------------------------
 if(BUILD_TESTING AND NOT EMSCRIPTEN)
     add_subdirectory(tests)

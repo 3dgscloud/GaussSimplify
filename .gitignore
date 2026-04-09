@@ -5,5 +5,5 @@ compile_commands.json
 *.o
 *.a
 .claude
-diaosu.sog
+diaosu*
 .emsdk
