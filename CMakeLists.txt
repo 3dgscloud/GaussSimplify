@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.26)
 project(gauss_simplify
-    VERSION 0.1.0
+    VERSION 0.1.1
     DESCRIPTION "3D Gaussian Splat simplification library"
     LANGUAGES CXX
 )
