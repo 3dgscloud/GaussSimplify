@@ -1,8 +1,16 @@
 # @gausssimplify/wasm
 
-WASM build of GaussSimplify — run 3D Gaussian Splat simplification in the browser or Node.js.
+WebAssembly version of GaussSimplify, providing TypeScript wrapper library for 3D Gaussian Splat simplification in browsers and Node.js.
 
-## Install
+## Features
+
+- Read/write multiple Gaussian splatting formats: PLY, Compressed PLY, Splat, KSplat, SPZ, SOG
+- High-performance simplification via kNN + moment matching
+- Model info retrieval for display
+- TypeScript type support
+- Browser and Node.js compatible
+
+## Installation
 
 ```bash
 npm install @gausssimplify/wasm
@@ -10,34 +18,75 @@ npm install @gausssimplify/wasm
 
 ## Usage
 
+### Browser
+
 ```typescript
 import { createGaussSimplify } from '@gausssimplify/wasm';
 
-const api = await createGaussSimplify();
+async function simplifyFile(file: File) {
+    // Initialize
+    const api = await createGaussSimplify();
 
-// 1. Read file
-const response = await fetch('model.ply');
-const { data: ir } = await api.read(new Uint8Array(await response.arrayBuffer()), 'ply');
+    // Read file
+    const fileData = await file.arrayBuffer();
+    const { data: ir } = await api.read(new Uint8Array(fileData), 'ply');
+    console.log(`Loaded ${ir.numPoints} points`);
 
-// 2. Get model info (for display)
-const { data: info } = await api.getModelInfo(ir);
-console.log(`Points: ${info.basic.numPoints}, Bounds:`, info.bounds);
+    // Get model info for display
+    const { data: info } = await api.getModelInfo(ir);
+    console.log(`Bounds: ${JSON.stringify(info.bounds)}`);
 
-// 3. Simplify to 10%
-const { data: simplified } = await api.simplify(ir, {
-    ratio: 0.1,
-    target_sh_degree: 1,
-});
+    // Simplify to 10%
+    const { data: simplified } = await api.simplify(ir, { ratio: 0.1 });
+    console.log(`Simplified to ${simplified.numPoints} points`);
 
-// 4. Export
-const { data: bytes } = await api.write(simplified, 'splat');
+    // Export as .splat
+    const { data: output } = await api.write(simplified, 'splat');
+
+    // Download
+    const blob = new Blob([output], { type: 'application/octet-stream' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'output.splat';
+    a.click();
+    URL.revokeObjectURL(url);
+}
+```
+
+### Node.js
+
+```typescript
+import { createGaussSimplify } from '@gausssimplify/wasm';
+import fs from 'fs';
+
+async function simplify() {
+    const api = await createGaussSimplify();
+
+    // Read file
+    const inputData = fs.readFileSync('input.ply');
+    const { data: ir } = await api.read(inputData, 'ply');
+    console.log(`Loaded ${ir.numPoints} points`);
+
+    // Simplify
+    const { data: simplified } = await api.simplify(ir, {
+        ratio: 0.1,
+        target_sh_degree: 1,
+    });
+
+    // Write output
+    const { data: output } = await api.write(simplified, 'splat');
+    fs.writeFileSync('output.splat', output);
+}
+
+simplify().catch(console.error);
 ```
 
 ## API
 
-### `createGaussSimplify(factory?)` → `Promise<GaussSimplify>`
+### `createGaussSimplify(moduleFactory?)`
 
-Initialize the WASM module (singleton). Optionally pass a custom module factory.
+Create and initialize a GaussSimplify WASM instance (singleton).
 
 ### `destroyGaussSimplify()`
 
@@ -69,40 +118,70 @@ Simplify a `GaussianCloudIR`.
 
 Write `GaussianCloudIR` to file bytes.
 
+| Param | Type | Description |
+|-------|------|-------------|
+| `ir` | `GaussianCloudIR` | Gaussian cloud data |
+| `format` | `string` | Output format |
+| `options.strict` | `boolean` | Strict mode (default: `false`) |
+
 ### `api.getModelInfo(ir)` → `Promise<ModelInfoResult>`
 
-Get bounding box, stats, and size breakdown from an IR.
+Get bounding box, point stats, and size breakdown from an IR.
 
 ### `api.getSupportedFormats()` → `string[]`
 
-List supported formats: `['ply', 'compressed.ply', 'splat', 'ksplat', 'spz', 'sog']`.
+Returns: `['ply', 'compressed.ply', 'splat', 'ksplat', 'spz', 'sog']`
 
 ### `api.getVersion()` → `string`
 
 Library version string.
 
-## Build from Source
+## Supported Formats
 
-Prerequisites: [Emscripten](https://emscripten.org/docs/getting_started/downloads.html)
+- `ply` — Standard PLY format
+- `compressed.ply` — Compressed PLY format
+- `splat` — Splat format
+- `ksplat` — KSplat format
+- `spz` — SPZ compressed format
+- `sog` — SOG format
+
+Powered by [GaussForge](https://github.com/3dgscloud/GaussSimplify).
+
+## Development
+
+### Build from Source
+
+Prerequisites: [Emscripten SDK](https://emscripten.org/docs/getting_started/downloads.html), Node.js 18+
 
 ```bash
 cd wasm
 npm install
-npm run build
+npm run build       # Build WASM + TypeScript
+npm run build:wasm  # Build WASM only
+npm run build:ts    # Build TypeScript only
 ```
 
-This produces:
+### Build Output
+
 - `gauss_simplify.node.js` — Node.js WASM module
 - `gauss_simplify.web.js` — Browser/Worker WASM module
 - `dist/index.node.js` — Node.js entry with types
 - `dist/index.web.js` — Browser entry with types
 
-## Supported Formats
+## Error Handling
 
-Read/Write: PLY, Compressed PLY, Splat, KSplat, SPZ, SOG
+All methods may throw errors. Use try-catch for robust handling:
 
-Powered by [GaussForge](https://github.com/3dgscloud/GaussForge).
+```typescript
+try {
+    const { data: simplified } = await api.simplify(ir, { ratio: 0.1 });
+} catch (error) {
+    console.error('Simplify failed:', error.message);
+}
+```
 
-## License
+## Requirements
 
-GPL-3.0-or-later
+- Emscripten SDK (for building WASM)
+- Node.js 18+ (for development)
+- TypeScript 5+ (for development)
