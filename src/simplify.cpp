@@ -36,6 +36,12 @@ using math::kTwoPiPow1p5;
 
 // --- Internal working representation with activated values ---
 
+struct ExtraInfo {
+    std::string name;
+    int dim = 0;
+    std::vector<float> data;
+};
+
 struct ActivatedCloud {
     int32_t count = 0;
     std::vector<float> positions;   // 3*N
@@ -46,10 +52,7 @@ struct ActivatedCloud {
     std::vector<float> sh;          // sh_coeffs_per_point*3 * N, passthrough
     int sh_coeffs_per_point = 0;
 
-    // extras: name -> (dim_per_point, data)
-    // dim_per_point inferred as data.size() / count
-    std::unordered_map<std::string, std::vector<float>> extras;
-    std::unordered_map<std::string, int> extras_dims;
+    std::vector<ExtraInfo> extras;
 };
 
 struct CacheEntry {
@@ -67,14 +70,16 @@ bool report_progress(const ProgressCallback& progress, const float value, const 
 
 // --- Median ---
 
-float median_of(std::vector<float> values) {
+float median_of(const std::vector<float>& values) {
     if (values.empty())
         return 0.0f;
-    std::sort(values.begin(), values.end());
-    const size_t mid = values.size() / 2;
-    if ((values.size() & 1U) != 0U)
-        return values[mid];
-    return 0.5f * (values[mid - 1] + values[mid]);
+    std::vector<float> copy(values);
+    const size_t mid = copy.size() / 2;
+    std::nth_element(copy.begin(), copy.begin() + static_cast<ptrdiff_t>(mid), copy.end());
+    if ((copy.size() & 1U) != 0U)
+        return copy[mid];
+    const float lo = *std::max_element(copy.begin(), copy.begin() + static_cast<ptrdiff_t>(mid));
+    return 0.5f * (lo + copy[mid]);
 }
 
 // --- IR <-> ActivatedCloud conversion ---
@@ -122,13 +127,15 @@ ActivatedCloud activate_from_ir(const gf::GaussianCloudIR& ir) {
         cloud.sh_coeffs_per_point = total_sh / 3;
     }
 
-    // Extras: copy as-is
-    cloud.extras = ir.extras;
+    // Extras: copy as-is, convert map -> flat vector
+    cloud.extras.reserve(ir.extras.size());
     for (const auto& [name, data] : ir.extras) {
+        ExtraInfo ei;
+        ei.name = name;
+        ei.data = data;
         if (n > 0 && !data.empty())
-            cloud.extras_dims[name] = static_cast<int>(data.size()) / n;
-        else
-            cloud.extras_dims[name] = 0;
+            ei.dim = static_cast<int>(data.size()) / n;
+        cloud.extras.push_back(std::move(ei));
     }
 
     return cloud;
@@ -155,7 +162,10 @@ gf::GaussianCloudIR deactivate_to_ir(const ActivatedCloud& cloud, const gf::Gaus
 
     ir.colors = cloud.colors;
     ir.sh = cloud.sh;
-    ir.extras = cloud.extras;
+    // Convert flat extras vector back to map
+    ir.extras.clear();
+    for (const auto& ei : cloud.extras)
+        ir.extras[ei.name] = ei.data;
     ir.meta = meta;
 
     return ir;
@@ -194,10 +204,11 @@ void copy_point(const ActivatedCloud& src, const int src_idx,
     }
 
     // Extras
-    for (const auto& [name, src_data] : src.extras) {
-        const int dim = src.extras_dims.at(name);
+    for (size_t ei = 0; ei < src.extras.size(); ++ei) {
+        const int dim = src.extras[ei].dim;
         if (dim <= 0) continue;
-        auto& dst_data = dst.extras[name];
+        const auto& src_data = src.extras[ei].data;
+        auto& dst_data = dst.extras[ei].data;
         const size_t so = static_cast<size_t>(src_idx) * static_cast<size_t>(dim);
         const size_t do_ = static_cast<size_t>(dst_idx) * static_cast<size_t>(dim);
         std::copy_n(src_data.begin() + static_cast<ptrdiff_t>(so), dim,
@@ -238,11 +249,12 @@ ActivatedCloud prune_by_opacity(const ActivatedCloud& input, const float request
         out.sh.resize(static_cast<size_t>(out_count) * static_cast<size_t>(sh_dim));
 
     // Setup extras output
-    for (const auto& [name, src_data] : input.extras) {
-        const int dim = input.extras_dims.at(name);
-        out.extras_dims[name] = dim;
-        if (dim > 0)
-            out.extras[name].resize(static_cast<size_t>(out_count) * static_cast<size_t>(dim));
+    out.extras.resize(input.extras.size());
+    for (size_t ei = 0; ei < input.extras.size(); ++ei) {
+        out.extras[ei].name = input.extras[ei].name;
+        out.extras[ei].dim = input.extras[ei].dim;
+        if (input.extras[ei].dim > 0)
+            out.extras[ei].data.resize(static_cast<size_t>(out_count) * static_cast<size_t>(input.extras[ei].dim));
     }
 
     for (int32_t dst_row = 0; dst_row < out_count; ++dst_row)
@@ -253,28 +265,32 @@ ActivatedCloud prune_by_opacity(const ActivatedCloud& input, const float request
 
 // --- Build rotation/mass cache ---
 
+CacheEntry build_cache_entry(const ActivatedCloud& cloud, const int i) {
+    CacheEntry entry;
+    const size_t i3 = static_cast<size_t>(i) * 3;
+    const size_t i4 = static_cast<size_t>(i) * 4;
+
+    const float sx = std::max(cloud.scales[i3 + 0], kMinScale);
+    const float sy = std::max(cloud.scales[i3 + 1], kMinScale);
+    const float sz = std::max(cloud.scales[i3 + 2], kMinScale);
+
+    math::quat_to_rotmat(
+        cloud.rotations[i4 + 0], cloud.rotations[i4 + 1],
+        cloud.rotations[i4 + 2], cloud.rotations[i4 + 3],
+        entry.R);
+
+    const float alpha = cloud.alphas[static_cast<size_t>(i)];
+    const float scale_prod = math::strict_prod3(sx, sy, sz);
+    entry.mass = math::strict_add(math::strict_mul(math::strict_mul(kTwoPiPow1p5, alpha), scale_prod), 1e-12f);
+    return entry;
+}
+
 void build_cache(const ActivatedCloud& cloud, std::vector<CacheEntry>& cache) {
     cache.resize(static_cast<size_t>(cloud.count));
 
     #pragma omp parallel for schedule(static)
-    for (int i = 0; i < cloud.count; ++i) {
-        auto& entry = cache[static_cast<size_t>(i)];
-        const size_t i3 = static_cast<size_t>(i) * 3;
-        const size_t i4 = static_cast<size_t>(i) * 4;
-
-        const float sx = std::max(cloud.scales[i3 + 0], kMinScale);
-        const float sy = std::max(cloud.scales[i3 + 1], kMinScale);
-        const float sz = std::max(cloud.scales[i3 + 2], kMinScale);
-
-        math::quat_to_rotmat(
-            cloud.rotations[i4 + 0], cloud.rotations[i4 + 1],
-            cloud.rotations[i4 + 2], cloud.rotations[i4 + 3],
-            entry.R);
-
-        const float alpha = cloud.alphas[static_cast<size_t>(i)];
-        const float scale_prod = math::strict_prod3(sx, sy, sz);
-        entry.mass = math::strict_add(math::strict_mul(math::strict_mul(kTwoPiPow1p5, alpha), scale_prod), 1e-12f);
-    }
+    for (int i = 0; i < cloud.count; ++i)
+        cache[static_cast<size_t>(i)] = build_cache_entry(cloud, i);
 }
 
 // --- Edge cost (Euclidean distance) ---
@@ -282,12 +298,10 @@ void build_cache(const ActivatedCloud& cloud, std::vector<CacheEntry>& cache) {
 float compute_edge_cost_euclidean(const ActivatedCloud& cloud, const int i, const int j) {
     const size_t i3 = static_cast<size_t>(i) * 3;
     const size_t j3 = static_cast<size_t>(j) * 3;
-    const float dx = math::strict_sub(cloud.positions[i3 + 0], cloud.positions[j3 + 0]);
-    const float dy = math::strict_sub(cloud.positions[i3 + 1], cloud.positions[j3 + 1]);
-    const float dz = math::strict_sub(cloud.positions[i3 + 2], cloud.positions[j3 + 2]);
-    return std::sqrt(math::strict_add(
-        math::strict_add(math::strict_mul(dx, dx), math::strict_mul(dy, dy)),
-        math::strict_mul(dz, dz)));
+    const float dx = cloud.positions[i3 + 0] - cloud.positions[j3 + 0];
+    const float dy = cloud.positions[i3 + 1] - cloud.positions[j3 + 1];
+    const float dz = cloud.positions[i3 + 2] - cloud.positions[j3 + 2];
+    return std::sqrt(dx * dx + dy * dy + dz * dz);
 }
 
 void compute_edge_costs(const ActivatedCloud& cloud,
@@ -317,9 +331,17 @@ void greedy_pairs_from_edges(const std::vector<std::pair<int, int>>& edges,
         if (std::isfinite(costs[i]))
             order.push_back(i);
     }
-    std::stable_sort(order.begin(), order.end(), [&](const size_t lhs, const size_t rhs) {
+    const auto cmp = [&](const size_t lhs, const size_t rhs) {
         return costs[lhs] < costs[rhs];
-    });
+    };
+    // Only need the top max_pairs edges; partial_sort is O(N * K) vs O(N log N)
+    if (max_pairs > 0 && static_cast<size_t>(max_pairs) < order.size()) {
+        std::partial_sort(order.begin(),
+                          order.begin() + static_cast<ptrdiff_t>(max_pairs),
+                          order.end(), cmp);
+    } else {
+        std::stable_sort(order.begin(), order.end(), cmp);
+    }
 
     used.assign(static_cast<size_t>(count), uint8_t{0});
     pairs.clear();
@@ -336,15 +358,43 @@ void greedy_pairs_from_edges(const std::vector<std::pair<int, int>>& edges,
     }
 }
 
+// --- Resize helpers (only grow, never shrink) ---
+
+void ensure_cloud_capacity(ActivatedCloud& cloud, const int32_t count, const int sh_dim,
+                           const bool has_colors, const bool has_sh,
+                           const std::vector<ExtraInfo>& src_extras) {
+    cloud.count = count;
+    const auto n3 = static_cast<size_t>(count) * 3;
+    const auto n4 = static_cast<size_t>(count) * 4;
+    const auto n1 = static_cast<size_t>(count);
+    cloud.positions.resize(n3);
+    cloud.scales.resize(n3);
+    cloud.rotations.resize(n4);
+    cloud.alphas.resize(n1);
+    if (has_colors)
+        cloud.colors.resize(n3);
+    if (has_sh && sh_dim > 0)
+        cloud.sh.resize(static_cast<size_t>(count) * static_cast<size_t>(sh_dim));
+    cloud.extras.resize(src_extras.size());
+    for (size_t ei = 0; ei < src_extras.size(); ++ei) {
+        cloud.extras[ei].name = src_extras[ei].name;
+        cloud.extras[ei].dim = src_extras[ei].dim;
+        if (src_extras[ei].dim > 0)
+            cloud.extras[ei].data.resize(static_cast<size_t>(count) * static_cast<size_t>(src_extras[ei].dim));
+    }
+}
+
 // --- Merge pairs via moment matching ---
 
-ActivatedCloud merge_pairs(const ActivatedCloud& input,
-                           const std::vector<CacheEntry>& cache,
-                           const std::vector<std::pair<int, int>>& pairs,
-                           std::vector<uint8_t>& used,
-                           std::vector<int>& keep_idx) {
-    if (pairs.empty())
-        return input;
+void merge_pairs(const ActivatedCloud& input,
+                 const std::vector<std::pair<int, int>>& pairs,
+                 std::vector<uint8_t>& used,
+                 std::vector<int>& keep_idx,
+                 ActivatedCloud& out) {
+    if (pairs.empty()) {
+        out = input;  // NOLINT(bugprone-unhandled-self-assignment)
+        return;
+    }
 
     used.assign(static_cast<size_t>(input.count), uint8_t{0});
     for (const auto [u, v] : pairs) {
@@ -362,25 +412,10 @@ ActivatedCloud merge_pairs(const ActivatedCloud& input,
     const int32_t out_count = static_cast<int32_t>(keep_idx.size() + pairs.size());
     const int sh_dim = input.sh_coeffs_per_point * 3;
 
-    ActivatedCloud out;
-    out.count = out_count;
     out.sh_coeffs_per_point = input.sh_coeffs_per_point;
-    out.positions.resize(static_cast<size_t>(out_count) * 3);
-    out.scales.resize(static_cast<size_t>(out_count) * 3);
-    out.rotations.resize(static_cast<size_t>(out_count) * 4);
-    out.alphas.resize(static_cast<size_t>(out_count));
-    if (!input.colors.empty())
-        out.colors.resize(static_cast<size_t>(out_count) * 3);
-    if (sh_dim > 0)
-        out.sh.resize(static_cast<size_t>(out_count) * static_cast<size_t>(sh_dim));
-
-    // Setup extras output
-    for (const auto& [name, src_data] : input.extras) {
-        const int dim = input.extras_dims.at(name);
-        out.extras_dims[name] = dim;
-        if (dim > 0)
-            out.extras[name].resize(static_cast<size_t>(out_count) * static_cast<size_t>(dim));
-    }
+    ensure_cloud_capacity(out, out_count, sh_dim,
+                          !input.colors.empty(), !input.sh.empty(),
+                          input.extras);
 
     // Copy unmerged points
     #pragma omp parallel for schedule(static)
@@ -391,8 +426,8 @@ ActivatedCloud merge_pairs(const ActivatedCloud& input,
     #pragma omp parallel for schedule(dynamic, 16)
     for (int pair_idx = 0; pair_idx < static_cast<int>(pairs.size()); ++pair_idx) {
         const auto [i, j] = pairs[static_cast<size_t>(pair_idx)];
-        const auto& cache_i = cache[static_cast<size_t>(i)];
-        const auto& cache_j = cache[static_cast<size_t>(j)];
+        const auto cache_i = build_cache_entry(input, i);
+        const auto cache_j = build_cache_entry(input, j);
         const size_t i3 = static_cast<size_t>(i) * 3;
         const size_t j3 = static_cast<size_t>(j) * 3;
 
@@ -485,21 +520,20 @@ ActivatedCloud merge_pairs(const ActivatedCloud& input,
         }
 
         // Extras: mass-weighted average
-        for (auto& [name, dst_data] : out.extras) {
-            const int dim = out.extras_dims[name];
+        for (size_t ei = 0; ei < out.extras.size(); ++ei) {
+            const int dim = out.extras[ei].dim;
             if (dim <= 0) continue;
-            const auto& src_data = input.extras.at(name);
-            const size_t ei = static_cast<size_t>(i) * static_cast<size_t>(dim);
-            const size_t ej = static_cast<size_t>(j) * static_cast<size_t>(dim);
-            const size_t eo = static_cast<size_t>(out_row) * static_cast<size_t>(dim);
+            const auto& src_data = input.extras[ei].data;
+            auto& dst_data = out.extras[ei].data;
+            const size_t e_i = static_cast<size_t>(i) * static_cast<size_t>(dim);
+            const size_t e_j = static_cast<size_t>(j) * static_cast<size_t>(dim);
+            const size_t e_o = static_cast<size_t>(out_row) * static_cast<size_t>(dim);
             for (int k = 0; k < dim; ++k)
-                dst_data[eo + static_cast<size_t>(k)] =
-                    (wi * src_data[ei + static_cast<size_t>(k)] +
-                     wj * src_data[ej + static_cast<size_t>(k)]) / W;
+                dst_data[e_o + static_cast<size_t>(k)] =
+                    (wi * src_data[e_i + static_cast<size_t>(k)] +
+                     wj * src_data[e_j + static_cast<size_t>(k)]) / W;
         }
     }
-
-    return out;
 }
 
 // --- Count helpers ---
@@ -580,6 +614,7 @@ gf::Expected<gf::GaussianCloudIR> simplify_impl(
         std::vector<uint8_t> used_rows;
         std::vector<std::pair<int, int>> pairs;
         std::vector<int> keep_idx;
+        ActivatedCloud scratch;  // Reused across passes to avoid realloc
 
         int pass = 0;
         while (current.count > target_count) {
@@ -617,8 +652,8 @@ gf::Expected<gf::GaussianCloudIR> simplify_impl(
             if (!report_progress(progress, pass_progress + 0.03f,
                                  pass_prefix + "merging " + std::to_string(pairs.size()) + " pairs"))
                 return gf::MakeError("Cancelled");
-            build_cache(current, cache);
-            current = merge_pairs(current, cache, pairs, used_rows, keep_idx);
+            merge_pairs(current, pairs, used_rows, keep_idx, scratch);
+            std::swap(current, scratch);
 
             // Record merges in audit trail
             if (audit) {

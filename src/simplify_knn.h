@@ -69,10 +69,10 @@ using KDTree = nanoflann::KDTreeSingleIndexAdaptor<
         #pragma omp for schedule(dynamic, 64)
         for (int i = 0; i < count; ++i) {
             const size_t query_count = static_cast<size_t>(std::min(count, k_eff + 1));
-            std::vector<size_t> ret_indices(query_count, 0);
-            std::vector<double> out_dists_sqr(query_count, 0.0);
+            size_t ret_indices_buf[64];
+            double out_dists_sqr_buf[64];
             nanoflann::KNNResultSet<double> result_set(query_count);
-            result_set.init(ret_indices.data(), out_dists_sqr.data());
+            result_set.init(ret_indices_buf, out_dists_sqr_buf);
             const double query[3] = {
                 static_cast<double>(positions[static_cast<size_t>(i) * 3 + 0]),
                 static_cast<double>(positions[static_cast<size_t>(i) * 3 + 1]),
@@ -83,7 +83,7 @@ using KDTree = nanoflann::KDTreeSingleIndexAdaptor<
             const size_t take = std::min(static_cast<size_t>(k_eff),
                 result_set.size() > 0 ? result_set.size() - 1 : size_t{0});
             for (size_t j = 0; j < take; ++j) {
-                const int neighbor = static_cast<int>(ret_indices[j + 1]);
+                const int neighbor = static_cast<int>(ret_indices_buf[j + 1]);
                 if (neighbor < 0 || neighbor == i)
                     continue;
                 const int u = std::min(i, neighbor);
