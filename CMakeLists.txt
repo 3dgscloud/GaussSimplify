@@ -58,3 +58,10 @@ if(NOT EMSCRIPTEN)
     add_executable(gauss_simplify src/main.cpp)
     target_link_libraries(gauss_simplify PRIVATE gauss_simplify_lib)
 endif()
+
+# --------------------------------------------------------
+# 6. Benchmarks (not built for WASM)
+# --------------------------------------------------------
+if(NOT EMSCRIPTEN)
+    add_subdirectory(benchmarks)
+endif()
