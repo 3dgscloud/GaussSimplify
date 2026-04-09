@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "gs/simplify.h"
+#include "gs/version.h"
 
 #include "gf/core/gauss_ir.h"
 #include "gf/core/validate.h"
@@ -62,6 +63,7 @@ void PrintUsage() {
               << "  --knn <int>               kNN neighbors (default: 16)\n"
               << "  --merge-cap <float>       Merge cap per pass (default: 0.5)\n"
               << "  --prune-threshold <float> Opacity prune threshold (default: 0.1)\n"
+              << "  --version                Show version\n"
               << "  --in-format <ext>         Override input format\n"
               << "  --out-format <ext>        Override output format\n"
               << "  --verbose                 Print progress\n"
@@ -77,6 +79,10 @@ int main(int argc, char** argv) {
     }
 
     const std::string arg1 = argv[1];
+    if (arg1 == "--version") {
+        std::cout << "gauss_simplify version " << GAUSS_SIMPLIFY_VERSION_STRING << "\n";
+        return 0;
+    }
     if (arg1 == "--help" || arg1 == "-h") {
         PrintUsage();
         return 0;

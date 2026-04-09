@@ -8,6 +8,13 @@ project(gauss_simplify
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Generate version header
+configure_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/gs/version.h.in
+    ${CMAKE_CURRENT_BINARY_DIR}/include/gs/version.h
+    @ONLY
+)
+
 # --------------------------------------------------------
 # 1. GaussForge (format conversion library via FetchContent)
 # --------------------------------------------------------
@@ -42,6 +49,7 @@ add_library(gauss_simplify_lib STATIC
 )
 target_include_directories(gauss_simplify_lib PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_BINARY_DIR}/include
 )
 target_link_libraries(gauss_simplify_lib
     PUBLIC gauss_forge
