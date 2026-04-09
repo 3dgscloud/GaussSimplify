@@ -8,6 +8,8 @@ project(gauss_simplify
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+include(CTest)
+
 # Generate version header
 configure_file(
     ${CMAKE_CURRENT_SOURCE_DIR}/include/gs/version.h.in
@@ -19,11 +21,21 @@ configure_file(
 # 1. GaussForge (format conversion library via FetchContent)
 # --------------------------------------------------------
 include(FetchContent)
-FetchContent_Declare(
-    gauss_forge
-    GIT_REPOSITORY https://github.com/3dgscloud/GaussForge.git
-    GIT_TAG        main
-)
+set(FETCHCONTENT_UPDATES_DISCONNECTED ON CACHE BOOL "Disable FetchContent updates while configuring" FORCE)
+
+set(GAUSS_FORGE_LOCAL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../GaussForge")
+if(EXISTS "${GAUSS_FORGE_LOCAL_DIR}/CMakeLists.txt")
+    FetchContent_Declare(
+        gauss_forge
+        SOURCE_DIR "${GAUSS_FORGE_LOCAL_DIR}"
+    )
+else()
+    FetchContent_Declare(
+        gauss_forge
+        GIT_REPOSITORY https://github.com/3dgscloud/GaussForge.git
+        GIT_TAG        main
+    )
+endif()
 FetchContent_MakeAvailable(gauss_forge)
 
 # --------------------------------------------------------
@@ -72,4 +84,11 @@ endif()
 # --------------------------------------------------------
 if(NOT EMSCRIPTEN)
     add_subdirectory(benchmarks)
+endif()
+
+# --------------------------------------------------------
+# 7. Tests
+# --------------------------------------------------------
+if(BUILD_TESTING AND NOT EMSCRIPTEN)
+    add_subdirectory(tests)
 endif()

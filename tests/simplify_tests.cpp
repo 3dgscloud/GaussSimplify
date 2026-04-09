@@ -1,0 +1,369 @@
+// SPDX-FileCopyrightText: 2026 GaussSimplify Authors
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+#include "gs/simplify.h"
+
+#include "gf/core/gauss_ir.h"
+#include "gf/core/validate.h"
+#include "simplify_math.h"
+
+#include <gtest/gtest.h>
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstdint>
+#include <map>
+#include <string>
+#include <utility>
+#include <vector>
+
+namespace {
+
+constexpr float kFloatTol = 1e-4f;
+
+struct PointSpec {
+    std::array<float, 3> position = {0.0f, 0.0f, 0.0f};
+    std::array<float, 3> log_scale = {0.0f, 0.0f, 0.0f};
+    std::array<float, 4> rotation = {1.0f, 0.0f, 0.0f, 0.0f};
+    float alpha = 0.5f; // Activated opacity, not logit.
+    std::array<float, 3> color = {0.0f, 0.0f, 0.0f};
+};
+
+float dot_quat(const std::array<float, 4>& lhs, const std::array<float, 4>& rhs) {
+    return lhs[0] * rhs[0] + lhs[1] * rhs[1] + lhs[2] * rhs[2] + lhs[3] * rhs[3];
+}
+
+float activated_alpha_from_ir(const gf::GaussianCloudIR& ir, const int index) {
+    return gs::math::sigmoid(ir.alphas[static_cast<size_t>(index)]);
+}
+
+float activated_scale_from_ir(const gf::GaussianCloudIR& ir, const int index, const int dim) {
+    return gs::math::activated_scale(ir.scales[static_cast<size_t>(index) * 3 + static_cast<size_t>(dim)]);
+}
+
+gf::GaussianCloudIR make_cloud(const std::vector<PointSpec>& points,
+                               const std::vector<float>& extra_scalar = {}) {
+    gf::GaussianCloudIR ir;
+    ir.numPoints = static_cast<int32_t>(points.size());
+    ir.meta.shDegree = 0;
+    ir.positions.resize(points.size() * 3);
+    ir.scales.resize(points.size() * 3);
+    ir.rotations.resize(points.size() * 4);
+    ir.alphas.resize(points.size());
+    ir.colors.resize(points.size() * 3);
+
+    for (size_t i = 0; i < points.size(); ++i) {
+        const size_t i3 = i * 3;
+        const size_t i4 = i * 4;
+        const auto& point = points[i];
+
+        ir.positions[i3 + 0] = point.position[0];
+        ir.positions[i3 + 1] = point.position[1];
+        ir.positions[i3 + 2] = point.position[2];
+
+        ir.scales[i3 + 0] = point.log_scale[0];
+        ir.scales[i3 + 1] = point.log_scale[1];
+        ir.scales[i3 + 2] = point.log_scale[2];
+
+        ir.rotations[i4 + 0] = point.rotation[0];
+        ir.rotations[i4 + 1] = point.rotation[1];
+        ir.rotations[i4 + 2] = point.rotation[2];
+        ir.rotations[i4 + 3] = point.rotation[3];
+
+        ir.alphas[i] = gs::math::logit_from_alpha(point.alpha);
+
+        ir.colors[i3 + 0] = point.color[0];
+        ir.colors[i3 + 1] = point.color[1];
+        ir.colors[i3 + 2] = point.color[2];
+    }
+
+    if (!extra_scalar.empty())
+        ir.extras.emplace("feature", extra_scalar);
+
+    const auto validation = gf::ValidateBasic(ir, true);
+    EXPECT_TRUE(validation.message.empty()) << validation.message;
+    return ir;
+}
+
+gf::GaussianCloudIR expect_ok(gf::Expected<gf::GaussianCloudIR> result) {
+    EXPECT_TRUE(result.ok()) << result.error().message;
+    return std::move(result.value());
+}
+
+std::vector<std::pair<int32_t, int32_t>> merge_pairs_by_pass(const gs::SimplifyAuditTrail& audit,
+                                                             const int32_t pass) {
+    std::vector<std::pair<int32_t, int32_t>> pairs;
+    for (const auto& merge : audit.merges) {
+        if (merge.pass == pass)
+            pairs.emplace_back(std::min(merge.left, merge.right), std::max(merge.left, merge.right));
+    }
+    std::sort(pairs.begin(), pairs.end());
+    return pairs;
+}
+
+std::map<int32_t, int> merge_count_per_pass(const gs::SimplifyAuditTrail& audit) {
+    std::map<int32_t, int> counts;
+    for (const auto& merge : audit.merges)
+        ++counts[merge.pass];
+    return counts;
+}
+
+} // namespace
+
+// --- Math function tests ---
+
+TEST(SimplifyMath, SigmoidLogitRoundTrip) {
+    const float probabilities[] = {1e-8f, 1e-4f, 0.25f, 0.5f, 0.9f, 0.9999999f};
+    for (const float p : probabilities) {
+        const float expected = gs::math::clamp_prob(p);
+        const float actual = gs::math::sigmoid(gs::math::logit_from_alpha(p));
+        EXPECT_NEAR(actual, expected, 1e-6f);
+    }
+}
+
+TEST(SimplifyMath, QuaternionMatrixRoundTrip) {
+    std::array<float, 4> q = {0.8253356f, 0.1509070f, 0.3018140f, 0.4527210f};
+    const float norm = std::sqrt(dot_quat(q, q));
+    for (float& v : q)
+        v /= norm;
+
+    std::array<float, 9> rotation{};
+    std::array<float, 4> reconstructed{};
+    gs::math::quat_to_rotmat(q[0], q[1], q[2], q[3], rotation);
+    gs::math::rotmat_to_quat(rotation, reconstructed);
+
+    const float alignment = std::abs(dot_quat(q, reconstructed));
+    EXPECT_NEAR(alignment, 1.0f, 1e-5f);
+}
+
+TEST(SimplifyMath, EigenDecompositionIdentity) {
+    // Identity matrix should have eigenvalues [1, 1, 1]
+    std::array<float, 9> identity = {1,0,0, 0,1,0, 0,0,1};
+    const auto eig = gs::math::eigen_symmetric_3x3_jacobi(identity);
+    EXPECT_NEAR(eig.values[0], 1.0f, 1e-5f);
+    EXPECT_NEAR(eig.values[1], 1.0f, 1e-5f);
+    EXPECT_NEAR(eig.values[2], 1.0f, 1e-5f);
+}
+
+TEST(SimplifyMath, EigenDecompositionDiagonal) {
+    // Diagonal [4, 2, 1] sorted descending
+    std::array<float, 9> A = {4,0,0, 0,2,0, 0,0,1};
+    const auto eig = gs::math::eigen_symmetric_3x3_jacobi(A);
+    EXPECT_NEAR(eig.values[0], 4.0f, 1e-4f);
+    EXPECT_NEAR(eig.values[1], 2.0f, 1e-4f);
+    EXPECT_NEAR(eig.values[2], 1.0f, 1e-4f);
+}
+
+// --- Simplify algorithm tests ---
+
+TEST(Simplify, PrunesByOpacityWithoutMergingWhenTargetAlreadyMet) {
+    const auto input = make_cloud({
+        {.position = {0.0f, 0.0f, 0.0f}, .alpha = 0.9f, .color = {1.0f, 0.0f, 0.0f}},
+        {.position = {1.0f, 0.0f, 0.0f}, .alpha = 0.2f, .color = {0.0f, 1.0f, 0.0f}},
+        {.position = {2.0f, 0.0f, 0.0f}, .alpha = 0.8f, .color = {0.0f, 0.0f, 1.0f}},
+    });
+
+    gs::SimplifyAuditTrail audit;
+    gs::SimplifyOptions options;
+    options.ratio = 1.0;
+    options.knn_k = 1;
+    options.merge_cap = 0.5;
+    options.opacity_prune_threshold = 0.5f;
+
+    const auto& output = expect_ok(gs::simplify_with_audit(input, audit, options));
+
+    EXPECT_EQ(audit.original_count, 3);
+    EXPECT_EQ(audit.post_prune_count, 2);
+    EXPECT_EQ(audit.final_count, 2);
+    EXPECT_EQ(audit.prune_survivor_ids, (std::vector<int32_t>{0, 2}));
+    EXPECT_TRUE(audit.merges.empty());
+
+    const auto validation = gf::ValidateBasic(output, true);
+    EXPECT_TRUE(validation.message.empty()) << validation.message;
+    EXPECT_EQ(output.numPoints, 2);
+    EXPECT_NEAR(output.positions[0], 0.0f, kFloatTol);
+    EXPECT_NEAR(output.positions[3], 2.0f, kFloatTol);
+    EXPECT_NEAR(activated_alpha_from_ir(output, 0), 0.9f, kFloatTol);
+    EXPECT_NEAR(activated_alpha_from_ir(output, 1), 0.8f, kFloatTol);
+}
+
+TEST(Simplify, MergesTwoPointsWithCorrectPositionColorOpacityAndScale) {
+    const auto input = make_cloud(
+        {
+            {.position = {0.0f, 0.0f, 0.0f}, .alpha = 0.5f, .color = {0.0f, 0.2f, 0.4f}},
+            {.position = {2.0f, 0.0f, 0.0f}, .alpha = 0.5f, .color = {1.0f, 0.6f, 0.8f}},
+        },
+        {10.0f, 20.0f});
+
+    gs::SimplifyAuditTrail audit;
+    gs::SimplifyOptions options;
+    options.ratio = 0.5;
+    options.knn_k = 1;
+    options.merge_cap = 0.5;
+    options.opacity_prune_threshold = 0.0f;
+
+    const auto& output = expect_ok(gs::simplify_with_audit(input, audit, options));
+
+    ASSERT_EQ(audit.merges.size(), 1u);
+    EXPECT_EQ(audit.merges[0].left, 0);
+    EXPECT_EQ(audit.merges[0].right, 1);
+    EXPECT_EQ(audit.merges[0].pass, 0);
+    EXPECT_EQ(audit.final_count, 1);
+
+    const auto validation = gf::ValidateBasic(output, true);
+    EXPECT_TRUE(validation.message.empty()) << validation.message;
+    EXPECT_EQ(output.numPoints, 1);
+
+    // Position: mass-weighted center, equal mass → midpoint
+    EXPECT_NEAR(output.positions[0], 1.0f, kFloatTol);
+    EXPECT_NEAR(output.positions[1], 0.0f, kFloatTol);
+    EXPECT_NEAR(output.positions[2], 0.0f, kFloatTol);
+
+    // Color: mass-weighted average, equal mass → midpoint
+    EXPECT_NEAR(output.colors[0], 0.5f, kFloatTol);
+    EXPECT_NEAR(output.colors[1], 0.4f, kFloatTol);
+    EXPECT_NEAR(output.colors[2], 0.6f, kFloatTol);
+
+    // Extras: mass-weighted average → 15.0
+    const auto feature_it = output.extras.find("feature");
+    ASSERT_NE(feature_it, output.extras.end());
+    EXPECT_EQ(feature_it->second.size(), 1u);
+    EXPECT_NEAR(feature_it->second[0], 15.0f, kFloatTol);
+
+    // Opacity: probabilistic OR  0.5 + 0.5 - 0.25 = 0.75
+    EXPECT_NEAR(activated_alpha_from_ir(output, 0), 0.75f, kFloatTol);
+
+    // Scale: Two identical points (scale=1, rotation=I) at x=0 and x=2,
+    // merged center at x=1. Covariance per point:
+    //   sigma_i = R*diag(s^2)*R^T + displacement*displacement^T
+    //   = diag(1,1,1) + [1,0,0; 0,0,0; 0,0,0]   (displacement from center)
+    // Weighted merge: sigma = diag(1,1,1) + [1,0,0; 0,0,0; 0,0,0] + eps
+    // Eigenvalues: 2+eps, 1+eps, 1+eps  →  sqrt ≈ √2, 1, 1
+    EXPECT_NEAR(activated_scale_from_ir(output, 0, 0), std::sqrt(2.0f), kFloatTol);
+    EXPECT_NEAR(activated_scale_from_ir(output, 0, 1), 1.0f, kFloatTol);
+    EXPECT_NEAR(activated_scale_from_ir(output, 0, 2), 1.0f, kFloatTol);
+}
+
+TEST(Simplify, SelectsNearestDisjointPairsInSinglePass) {
+    const auto input = make_cloud({
+        {.position = {0.0f, 0.0f, 0.0f}, .alpha = 0.8f},
+        {.position = {0.1f, 0.0f, 0.0f}, .alpha = 0.8f},
+        {.position = {10.0f, 0.0f, 0.0f}, .alpha = 0.8f},
+        {.position = {10.3f, 0.0f, 0.0f}, .alpha = 0.8f},
+    });
+
+    gs::SimplifyAuditTrail audit;
+    gs::SimplifyOptions options;
+    options.ratio = 0.5;
+    options.knn_k = 1;
+    options.merge_cap = 0.5;
+    options.opacity_prune_threshold = 0.0f;
+
+    expect_ok(gs::simplify_with_audit(input, audit, options));
+
+    EXPECT_EQ(audit.original_count, 4);
+    EXPECT_EQ(audit.post_prune_count, 4);
+    EXPECT_EQ(audit.final_count, 2);
+    const auto pass_zero_pairs = merge_pairs_by_pass(audit, 0);
+    EXPECT_EQ(pass_zero_pairs,
+              (std::vector<std::pair<int32_t, int32_t>>{{0, 1}, {2, 3}}));
+}
+
+TEST(Simplify, PruningCanReachTargetWithoutAnyMergePasses) {
+    const auto input = make_cloud({
+        {.position = {0.0f, 0.0f, 0.0f}, .alpha = 0.9f},
+        {.position = {1.0f, 0.0f, 0.0f}, .alpha = 0.8f},
+        {.position = {2.0f, 0.0f, 0.0f}, .alpha = 0.2f},
+        {.position = {3.0f, 0.0f, 0.0f}, .alpha = 0.1f},
+    });
+
+    gs::SimplifyAuditTrail audit;
+    gs::SimplifyOptions options;
+    options.ratio = 0.5;
+    options.knn_k = 1;
+    options.merge_cap = 0.5;
+    options.opacity_prune_threshold = 0.5f;
+
+    expect_ok(gs::simplify_with_audit(input, audit, options));
+
+    EXPECT_EQ(audit.post_prune_count, 2);
+    EXPECT_EQ(audit.final_count, 2);
+    EXPECT_EQ(audit.prune_survivor_ids, (std::vector<int32_t>{0, 1}));
+    EXPECT_TRUE(audit.merges.empty());
+}
+
+TEST(Simplify, RatioIsClampedToKeepAtLeastOnePoint) {
+    const auto input = make_cloud({
+        {.position = {0.0f, 0.0f, 0.0f}, .alpha = 0.9f},
+        {.position = {1.0f, 0.0f, 0.0f}, .alpha = 0.9f},
+        {.position = {2.0f, 0.0f, 0.0f}, .alpha = 0.9f},
+        {.position = {3.0f, 0.0f, 0.0f}, .alpha = 0.9f},
+        {.position = {4.0f, 0.0f, 0.0f}, .alpha = 0.9f},
+    });
+
+    gs::SimplifyAuditTrail audit;
+    gs::SimplifyOptions options;
+    options.ratio = -1.0;
+    options.knn_k = 1;
+    options.merge_cap = 0.5;
+    options.opacity_prune_threshold = 0.0f;
+
+    const auto& output = expect_ok(gs::simplify_with_audit(input, audit, options));
+
+    EXPECT_EQ(audit.final_count, 1);
+    EXPECT_EQ(output.numPoints, 1);
+}
+
+TEST(Simplify, RatioAboveOneKeepsAllSurvivors) {
+    const auto input = make_cloud({
+        {.position = {0.0f, 0.0f, 0.0f}, .alpha = 0.9f},
+        {.position = {1.0f, 0.0f, 0.0f}, .alpha = 0.9f},
+        {.position = {2.0f, 0.0f, 0.0f}, .alpha = 0.9f},
+        {.position = {3.0f, 0.0f, 0.0f}, .alpha = 0.9f},
+        {.position = {4.0f, 0.0f, 0.0f}, .alpha = 0.9f},
+    });
+
+    gs::SimplifyAuditTrail audit;
+    gs::SimplifyOptions options;
+    options.ratio = 2.0;
+    options.knn_k = 1;
+    options.merge_cap = 0.5;
+    options.opacity_prune_threshold = 0.0f;
+
+    const auto& output = expect_ok(gs::simplify_with_audit(input, audit, options));
+
+    EXPECT_EQ(audit.post_prune_count, 5);
+    EXPECT_EQ(audit.final_count, 5);
+    EXPECT_TRUE(audit.merges.empty());
+    EXPECT_EQ(output.numPoints, 5);
+}
+
+TEST(Simplify, ZeroMergeCapFallsBackToOneMergePerPass) {
+    const auto input = make_cloud({
+        {.position = {0.0f, 0.0f, 0.0f}, .alpha = 0.9f},
+        {.position = {1.0f, 0.0f, 0.0f}, .alpha = 0.9f},
+        {.position = {2.0f, 0.0f, 0.0f}, .alpha = 0.9f},
+        {.position = {3.0f, 0.0f, 0.0f}, .alpha = 0.9f},
+        {.position = {4.0f, 0.0f, 0.0f}, .alpha = 0.9f},
+        {.position = {5.0f, 0.0f, 0.0f}, .alpha = 0.9f},
+    });
+
+    gs::SimplifyAuditTrail audit;
+    gs::SimplifyOptions options;
+    options.ratio = 0.0;
+    options.knn_k = 1;
+    options.merge_cap = 0.0;
+    options.opacity_prune_threshold = 0.0f;
+
+    expect_ok(gs::simplify_with_audit(input, audit, options));
+
+    EXPECT_EQ(audit.final_count, 1);
+    ASSERT_EQ(audit.merges.size(), 5u);
+
+    const auto pass_counts = merge_count_per_pass(audit);
+    ASSERT_EQ(pass_counts.size(), 5u);
+    for (const auto& [pass, count] : pass_counts) {
+        EXPECT_EQ(count, 1) << "pass=" << pass << " should have exactly 1 merge";
+    }
+}
