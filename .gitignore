@@ -1,0 +1,10 @@
+build/
+.cache/
+compile_commands.json
+.DS_Store
+*.o
+*.a
+.claude
+diaosu*
+.emsdk
+build-wasm/

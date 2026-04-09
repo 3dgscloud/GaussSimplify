@@ -1,0 +1,58 @@
+{
+    "name": "@gausssimplify/wasm",
+    "version": "0.1.1",
+    "type": "module",
+    "description": "GaussSimplify WASM library for 3D Gaussian Splat simplification",
+    "main": "dist/index.web.js",
+    "types": "dist/index.web.d.ts",
+    "module": "dist/index.web.js",
+    "exports": {
+        ".": {
+            "browser": "./dist/index.web.js",
+            "node": "./dist/index.node.js",
+            "import": "./dist/index.web.js",
+            "require": "./dist/index.node.js",
+            "types": "./dist/index.d.ts"
+        },
+        "./package.json": "./package.json"
+    },
+    "files": [
+        "dist",
+        "README.md"
+    ],
+    "scripts": {
+        "build": "npm run build:wasm && npm run build:ts",
+        "build:wasm": "node build-wasm.js",
+        "build:ts": "tsc && rollup -c",
+        "prepublishOnly": "npm run build"
+    },
+    "publishConfig": {
+        "access": "public",
+        "provenance": true
+    },
+    "keywords": [
+        "gaussian-splatting",
+        "3d",
+        "point-cloud",
+        "simplification",
+        "wasm"
+    ],
+    "author": "tcodestudio",
+    "license": "GPL-3.0",
+    "devDependencies": {
+        "@rollup/plugin-typescript": "^11.1.5",
+        "@types/node": "^20.10.0",
+        "rollup": "^4.6.0",
+        "tslib": "^2.8.1",
+        "typescript": "^5.3.3"
+    },
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/3dgscloud/GaussSimplify.git",
+        "directory": "wasm"
+    },
+    "bugs": {
+        "url": "https://github.com/3dgscloud/GaussSimplify/issues"
+    },
+    "homepage": "https://github.com/3dgscloud/GaussSimplify"
+}
