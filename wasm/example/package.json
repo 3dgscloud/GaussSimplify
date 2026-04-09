@@ -1,0 +1,13 @@
+{
+    "name": "gausssimplify-wasm-example",
+    "version": "1.0.0",
+    "type": "module",
+    "description": "Example - Test @gausssimplify/wasm npm package (local installation)",
+    "scripts": {
+        "test": "node test.js",
+        "install-local": "npm install file:.."
+    },
+    "dependencies": {
+        "@gausssimplify/wasm": "file:.."
+    }
+}

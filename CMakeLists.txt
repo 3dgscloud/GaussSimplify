@@ -106,7 +106,23 @@ if(NOT EMSCRIPTEN AND OpenMP_CXX_FOUND)
 endif()
 
 # --------------------------------------------------------
-# 6. CLI executable (not built for WASM)
+# 6. WASM build (Emscripten only)
+# --------------------------------------------------------
+if(EMSCRIPTEN)
+    include(cmakes/wasm.cmake)
+
+    add_executable(gauss_simplify_wasm src/wasm/bindings.cpp)
+    target_link_libraries(gauss_simplify_wasm PRIVATE gauss_simplify_lib)
+    target_link_options(gauss_simplify_wasm PRIVATE ${GAUSS_SIMPLIFY_WASM_LINK_OPTIONS})
+
+    set_target_properties(gauss_simplify_wasm PROPERTIES
+        OUTPUT_NAME "gauss_simplify"
+        SUFFIX ".js"
+    )
+endif()
+
+# --------------------------------------------------------
+# 7. CLI executable (not built for WASM)
 # --------------------------------------------------------
 if(NOT EMSCRIPTEN)
     add_executable(gauss_simplify src/main.cpp)
@@ -114,14 +130,14 @@ if(NOT EMSCRIPTEN)
 endif()
 
 # --------------------------------------------------------
-# 7. Benchmarks (not built for WASM)
+# 8. Benchmarks (not built for WASM)
 # --------------------------------------------------------
 if(NOT EMSCRIPTEN)
     add_subdirectory(benchmarks)
 endif()
 
 # --------------------------------------------------------
-# 8. Tests
+# 9. Tests
 # --------------------------------------------------------
 if(BUILD_TESTING AND NOT EMSCRIPTEN)
     add_subdirectory(tests)
