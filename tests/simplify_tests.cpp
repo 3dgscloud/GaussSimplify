@@ -367,3 +367,230 @@ TEST(Simplify, ZeroMergeCapFallsBackToOneMergePerPass) {
         EXPECT_EQ(count, 1) << "pass=" << pass << " should have exactly 1 merge";
     }
 }
+
+// --- New rigorous tests ---
+
+TEST(Simplify, AsymmetricMergeCorrectlyWeightedByMass) {
+    // Two points with different alphas -> different masses.
+    // mass ratio ~ 0.3 : 0.8 = 3 : 8
+    // w0/W ~ 3/11, w1/W ~ 8/11
+    const auto input = make_cloud(
+        {
+            {.position = {0.0f, 0.0f, 0.0f}, .alpha = 0.3f, .color = {1.0f, 0.0f, 0.0f}},
+            {.position = {2.0f, 0.0f, 0.0f}, .alpha = 0.8f, .color = {0.0f, 0.0f, 1.0f}},
+        },
+        {10.0f, 20.0f});
+
+    gs::SimplifyAuditTrail audit;
+    gs::SimplifyOptions options;
+    options.ratio = 0.5;
+    options.knn_k = 1;
+    options.merge_cap = 0.5;
+    options.opacity_prune_threshold = 0.0f;
+
+    const auto output = expect_ok(gs::simplify_with_audit(input, audit, options));
+
+    ASSERT_EQ(audit.merges.size(), 1u);
+    EXPECT_EQ(audit.final_count, 1);
+    EXPECT_EQ(output.numPoints, 1);
+
+    // Position: mass-weighted center at 16/11
+    EXPECT_NEAR(output.positions[0], 16.0f / 11.0f, kFloatTol);
+    EXPECT_NEAR(output.positions[1], 0.0f, kFloatTol);
+    EXPECT_NEAR(output.positions[2], 0.0f, kFloatTol);
+
+    // Color: mass-weighted
+    EXPECT_NEAR(output.colors[0], 3.0f / 11.0f, kFloatTol);
+    EXPECT_NEAR(output.colors[1], 0.0f, kFloatTol);
+    EXPECT_NEAR(output.colors[2], 8.0f / 11.0f, kFloatTol);
+
+    // Extras: mass-weighted -> (3/11)*10 + (8/11)*20 = 190/11
+    const auto feature_it = output.extras.find("feature");
+    ASSERT_NE(feature_it, output.extras.end());
+    EXPECT_NEAR(feature_it->second[0], 190.0f / 11.0f, kFloatTol);
+
+    // Opacity: probabilistic OR  0.3 + 0.8 - 0.24 = 0.86
+    EXPECT_NEAR(activated_alpha_from_ir(output, 0), 0.86f, kFloatTol);
+
+    // Scale: weighted covariance gives sigma_xx = 2387/1331 + eps
+    // sigma_yy = sigma_zz = 1 + eps (displacement along x only)
+    EXPECT_NEAR(activated_scale_from_ir(output, 0, 0),
+                std::sqrt(2387.0f / 1331.0f), kFloatTol);
+    EXPECT_NEAR(activated_scale_from_ir(output, 0, 1), 1.0f, kFloatTol);
+    EXPECT_NEAR(activated_scale_from_ir(output, 0, 2), 1.0f, kFloatTol);
+}
+
+TEST(Simplify, MergesWithDifferentScalesAtSamePosition) {
+    // Two points at same position, different scales -> unequal mass.
+    // Point 0: scale=(4,1,1), mass ~ 0.5*4=2.0
+    // Point 1: scale=(1,1,1), mass ~ 0.5*1=0.5
+    // w0/W ~ 4/5, w1/W ~ 1/5
+    // sigma = 0.8*diag(16,1,1) + 0.2*diag(1,1,1) + eps*I = diag(13+eps, 1+eps, 1+eps)
+    const auto input = make_cloud({
+        {.position = {0.0f, 0.0f, 0.0f},
+         .log_scale = {std::log(4.0f), 0.0f, 0.0f},
+         .alpha = 0.5f,
+         .color = {1.0f, 0.0f, 0.0f}},
+        {.position = {0.0f, 0.0f, 0.0f},
+         .log_scale = {0.0f, 0.0f, 0.0f},
+         .alpha = 0.5f,
+         .color = {0.0f, 0.0f, 1.0f}},
+    });
+
+    gs::SimplifyAuditTrail audit;
+    gs::SimplifyOptions options;
+    options.ratio = 0.5;
+    options.knn_k = 1;
+    options.merge_cap = 0.5;
+    options.opacity_prune_threshold = 0.0f;
+
+    const auto output = expect_ok(gs::simplify_with_audit(input, audit, options));
+
+    ASSERT_EQ(audit.merges.size(), 1u);
+    EXPECT_EQ(output.numPoints, 1);
+
+    const auto validation = gf::ValidateBasic(output, true);
+    EXPECT_TRUE(validation.message.empty()) << validation.message;
+
+    // Position: same position -> no displacement -> center unchanged
+    EXPECT_NEAR(output.positions[0], 0.0f, kFloatTol);
+    EXPECT_NEAR(output.positions[1], 0.0f, kFloatTol);
+    EXPECT_NEAR(output.positions[2], 0.0f, kFloatTol);
+
+    // Color: mass-weighted -> (0.8*1+0.2*0, 0, 0.8*0+0.2*1) = (0.8, 0, 0.2)
+    EXPECT_NEAR(output.colors[0], 0.8f, kFloatTol);
+    EXPECT_NEAR(output.colors[1], 0.0f, kFloatTol);
+    EXPECT_NEAR(output.colors[2], 0.2f, kFloatTol);
+
+    // Opacity: 0.5 + 0.5 - 0.25 = 0.75
+    EXPECT_NEAR(activated_alpha_from_ir(output, 0), 0.75f, kFloatTol);
+
+    // Scale: sqrt(13+eps) ~ 3.6056, 1, 1
+    EXPECT_NEAR(activated_scale_from_ir(output, 0, 0), std::sqrt(13.0f), kFloatTol);
+    EXPECT_NEAR(activated_scale_from_ir(output, 0, 1), 1.0f, kFloatTol);
+    EXPECT_NEAR(activated_scale_from_ir(output, 0, 2), 1.0f, kFloatTol);
+}
+
+TEST(Simplify, MultiPassMergeWithMergeCap) {
+    // 8 points in 4 clusters of 2 with non-uniform inter-cluster spacing.
+    // This avoids kNN tie-breaking issues after merges shift positions.
+    // ratio=0.25 -> target=2. merge_cap=0.3 -> cap=max(1,int(0.3*8))=2.
+    // Pass 0: 8 -> 6 (2 merges of closest clusters)
+    // Pass 1: 6 -> 4 (2 merges of next closest)
+    // Pass 2: 4 -> 2 (2 merges of remaining)
+    const auto input = make_cloud({
+        {.position = {0.0f, 0.0f, 0.0f}, .alpha = 0.8f},
+        {.position = {0.01f, 0.0f, 0.0f}, .alpha = 0.8f},
+        {.position = {10.0f, 0.0f, 0.0f}, .alpha = 0.8f},
+        {.position = {10.01f, 0.0f, 0.0f}, .alpha = 0.8f},
+        {.position = {100.0f, 0.0f, 0.0f}, .alpha = 0.8f},
+        {.position = {100.01f, 0.0f, 0.0f}, .alpha = 0.8f},
+        {.position = {1000.0f, 0.0f, 0.0f}, .alpha = 0.8f},
+        {.position = {1000.01f, 0.0f, 0.0f}, .alpha = 0.8f},
+    });
+
+    gs::SimplifyAuditTrail audit;
+    gs::SimplifyOptions options;
+    options.ratio = 0.25;
+    options.knn_k = 1;
+    options.merge_cap = 0.3;
+    options.opacity_prune_threshold = 0.0f;
+
+    expect_ok(gs::simplify_with_audit(input, audit, options));
+
+    EXPECT_EQ(audit.original_count, 8);
+    EXPECT_EQ(audit.final_count, 2);
+    EXPECT_EQ(audit.merges.size(), 6u);
+
+    const auto pass_counts = merge_count_per_pass(audit);
+    EXPECT_EQ(pass_counts.size(), 3u) << "expected exactly 3 passes";
+    for (const auto& [pass, count] : pass_counts) {
+        EXPECT_EQ(count, 2) << "pass=" << pass << " should have exactly 2 merges";
+    }
+}
+
+TEST(Simplify, SinglePointPassesThroughUnchanged) {
+    const auto input = make_cloud({
+        {.position = {1.0f, 2.0f, 3.0f},
+         .log_scale = {std::log(0.5f), 0.0f, 0.0f},
+         .rotation = {1.0f, 0.0f, 0.0f, 0.0f},
+         .alpha = 0.9f,
+         .color = {0.1f, 0.2f, 0.3f}},
+    });
+
+    gs::SimplifyAuditTrail audit;
+    gs::SimplifyOptions options;
+    options.ratio = 0.5;
+    options.knn_k = 1;
+    options.merge_cap = 0.5;
+    options.opacity_prune_threshold = 0.0f;
+
+    const auto output = expect_ok(gs::simplify_with_audit(input, audit, options));
+
+    EXPECT_EQ(audit.original_count, 1);
+    EXPECT_EQ(audit.post_prune_count, 1);
+    EXPECT_EQ(audit.final_count, 1);
+    EXPECT_TRUE(audit.merges.empty());
+
+    EXPECT_EQ(output.numPoints, 1);
+    EXPECT_NEAR(output.positions[0], 1.0f, kFloatTol);
+    EXPECT_NEAR(output.positions[1], 2.0f, kFloatTol);
+    EXPECT_NEAR(output.positions[2], 3.0f, kFloatTol);
+    EXPECT_NEAR(activated_alpha_from_ir(output, 0), 0.9f, kFloatTol);
+    EXPECT_NEAR(output.colors[0], 0.1f, kFloatTol);
+    EXPECT_NEAR(output.colors[1], 0.2f, kFloatTol);
+    EXPECT_NEAR(output.colors[2], 0.3f, kFloatTol);
+}
+
+TEST(Simplify, NonIdentityRotationMergeProducesValidOutput) {
+    // Two points with non-trivial rotations and different scales.
+    // We verify structural validity rather than exact eigenvalues,
+    // since the quaternion sign/orientation convention is subtle.
+    const float cos22 = std::cos(3.14159265f / 8.0f); // cos(22.5 deg)
+    const float sin22 = std::sin(3.14159265f / 8.0f); // sin(22.5 deg)
+
+    const auto input = make_cloud({
+        {.position = {0.0f, 0.0f, 0.0f},
+         .log_scale = {std::log(4.0f), 0.0f, 0.0f},
+         .rotation = {cos22, 0.0f, 0.0f, sin22},
+         .alpha = 0.8f},
+        {.position = {1.0f, 0.0f, 0.0f},
+         .log_scale = {0.0f, std::log(2.0f), 0.0f},
+         .rotation = {1.0f, 0.0f, 0.0f, 0.0f},
+         .alpha = 0.8f},
+    });
+
+    gs::SimplifyAuditTrail audit;
+    gs::SimplifyOptions options;
+    options.ratio = 0.5;
+    options.knn_k = 1;
+    options.merge_cap = 0.5;
+    options.opacity_prune_threshold = 0.0f;
+
+    const auto output = expect_ok(gs::simplify_with_audit(input, audit, options));
+
+    const auto validation = gf::ValidateBasic(output, true);
+    EXPECT_TRUE(validation.message.empty()) << validation.message;
+
+    EXPECT_EQ(output.numPoints, 1);
+
+    // Quaternion should be normalized
+    const float qw = output.rotations[0];
+    const float qx = output.rotations[1];
+    const float qy = output.rotations[2];
+    const float qz = output.rotations[3];
+    EXPECT_NEAR(std::sqrt(qw * qw + qx * qx + qy * qy + qz * qz), 1.0f, 1e-5f);
+
+    // All scales positive and finite
+    for (int d = 0; d < 3; ++d) {
+        const float s = activated_scale_from_ir(output, 0, d);
+        EXPECT_GT(s, 0.0f);
+        EXPECT_TRUE(std::isfinite(s));
+    }
+
+    // No NaN in output
+    for (int d = 0; d < 3; ++d) {
+        EXPECT_FALSE(std::isnan(output.positions[d]));
+        EXPECT_FALSE(std::isnan(output.colors[d]));
+    }
+}
