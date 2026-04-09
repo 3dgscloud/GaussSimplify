@@ -15,6 +15,7 @@ struct SimplifyOptions {
     int knn_k = 16;                        // kNN neighbors for merge candidate graph
     double merge_cap = 0.5;                // Max fraction of points merged per pass (0.01-0.5)
     float opacity_prune_threshold = 0.1f;  // Opacity pruning threshold
+    int target_sh_degree = -1;             // Target SH degree (-1=keep, 0-3=reduce)
 };
 
 using ProgressCallback = std::function<bool(float progress, const std::string& stage)>;

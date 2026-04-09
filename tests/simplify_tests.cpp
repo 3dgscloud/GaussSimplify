@@ -594,3 +594,130 @@ TEST(Simplify, NonIdentityRotationMergeProducesValidOutput) {
         EXPECT_FALSE(std::isnan(output.colors[d]));
     }
 }
+
+// --- SH reduction tests ---
+
+gf::GaussianCloudIR make_cloud_with_sh(const std::vector<PointSpec>& points, int sh_degree) {
+    auto ir = make_cloud(points);
+    ir.meta.shDegree = sh_degree;
+    if (sh_degree > 0) {
+        const int sh_per_point = gf::ShCoeffsPerPoint(sh_degree);
+        ir.sh.resize(static_cast<size_t>(points.size()) * static_cast<size_t>(sh_per_point));
+        for (size_t i = 0; i < points.size(); ++i) {
+            for (int k = 0; k < sh_per_point; ++k) {
+                ir.sh[i * static_cast<size_t>(sh_per_point) + static_cast<size_t>(k)] =
+                    static_cast<float>(i * 100 + k);  // Predictable values
+            }
+        }
+    }
+    const auto validation = gf::ValidateBasic(ir, true);
+    EXPECT_TRUE(validation.message.empty()) << validation.message;
+    return ir;
+}
+
+TEST(Simplify, ReducesSH3ToSH0) {
+    const auto input = make_cloud_with_sh(
+        {{.position = {0.0f, 0.0f, 0.0f}, .alpha = 0.9f},
+         {.position = {1.0f, 0.0f, 0.0f}, .alpha = 0.9f}},
+        3);
+
+    gs::SimplifyOptions options;
+    options.ratio = 1.0;
+    options.target_sh_degree = 0;
+    options.opacity_prune_threshold = 0.0f;
+
+    const auto output = expect_ok(gs::simplify(input, options));
+
+    EXPECT_EQ(output.meta.shDegree, 0);
+    EXPECT_TRUE(output.sh.empty());
+    EXPECT_EQ(output.numPoints, 2);
+    // Colors (DC) should still be present
+    EXPECT_FALSE(output.colors.empty());
+}
+
+TEST(Simplify, ReducesSH3ToSH1) {
+    const auto input = make_cloud_with_sh(
+        {{.position = {0.0f, 0.0f, 0.0f}, .alpha = 0.9f},
+         {.position = {1.0f, 0.0f, 0.0f}, .alpha = 0.9f}},
+        3);
+
+    gs::SimplifyOptions options;
+    options.ratio = 1.0;
+    options.target_sh_degree = 1;
+    options.opacity_prune_threshold = 0.0f;
+
+    const auto output = expect_ok(gs::simplify(input, options));
+
+    const int sh1_per_point = gf::ShCoeffsPerPoint(1);  // 9
+    EXPECT_EQ(output.meta.shDegree, 1);
+    ASSERT_EQ(output.sh.size(), static_cast<size_t>(2 * sh1_per_point));
+
+    // First point's SH should be the first 9 values from the original SH3 data
+    for (int k = 0; k < sh1_per_point; ++k) {
+        EXPECT_NEAR(output.sh[static_cast<size_t>(k)], static_cast<float>(k), 1e-4f);
+    }
+    // Second point's SH should be the first 9 values from original point 1's data
+    for (int k = 0; k < sh1_per_point; ++k) {
+        EXPECT_NEAR(output.sh[static_cast<size_t>(sh1_per_point + k)],
+                    static_cast<float>(100 + k), 1e-4f);
+    }
+}
+
+TEST(Simplify, TargetSHDegreeHigherThanCurrentIsNoOp) {
+    const auto input = make_cloud_with_sh(
+        {{.position = {0.0f, 0.0f, 0.0f}, .alpha = 0.9f}},
+        1);
+
+    const int sh1_per_point = gf::ShCoeffsPerPoint(1);  // 9
+    ASSERT_EQ(input.sh.size(), static_cast<size_t>(sh1_per_point));
+
+    gs::SimplifyOptions options;
+    options.ratio = 1.0;
+    options.target_sh_degree = 3;  // Can't upgrade
+    options.opacity_prune_threshold = 0.0f;
+
+    const auto output = expect_ok(gs::simplify(input, options));
+
+    // Should remain SH1
+    EXPECT_EQ(output.meta.shDegree, 1);
+    ASSERT_EQ(output.sh.size(), static_cast<size_t>(sh1_per_point));
+}
+
+TEST(Simplify, DefaultSHDegreeKeepsOriginal) {
+    const auto input = make_cloud_with_sh(
+        {{.position = {0.0f, 0.0f, 0.0f}, .alpha = 0.9f}},
+        3);
+
+    const int sh3_per_point = gf::ShCoeffsPerPoint(3);  // 45
+    gs::SimplifyOptions options;
+    options.ratio = 1.0;
+    // target_sh_degree defaults to -1
+    options.opacity_prune_threshold = 0.0f;
+
+    const auto output = expect_ok(gs::simplify(input, options));
+
+    EXPECT_EQ(output.meta.shDegree, 3);
+    EXPECT_EQ(output.sh.size(), static_cast<size_t>(sh3_per_point));
+}
+
+TEST(Simplify, SHReductionWithMergePreservesCorrectDegree) {
+    // Two points with SH3, merge them, target SH1
+    const auto input = make_cloud_with_sh(
+        {{.position = {0.0f, 0.0f, 0.0f}, .alpha = 0.5f},
+         {.position = {1.0f, 0.0f, 0.0f}, .alpha = 0.5f}},
+        3);
+
+    gs::SimplifyOptions options;
+    options.ratio = 0.5;
+    options.knn_k = 1;
+    options.merge_cap = 0.5;
+    options.opacity_prune_threshold = 0.0f;
+    options.target_sh_degree = 1;
+
+    const auto output = expect_ok(gs::simplify(input, options));
+
+    EXPECT_EQ(output.numPoints, 1);
+    EXPECT_EQ(output.meta.shDegree, 1);
+    const int sh1_per_point = gf::ShCoeffsPerPoint(1);  // 9
+    ASSERT_EQ(output.sh.size(), static_cast<size_t>(sh1_per_point));
+}

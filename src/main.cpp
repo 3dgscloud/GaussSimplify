@@ -63,6 +63,7 @@ void PrintUsage() {
               << "  --knn <int>               kNN neighbors (default: 16)\n"
               << "  --merge-cap <float>       Merge cap per pass (default: 0.5)\n"
               << "  --prune-threshold <float> Opacity prune threshold (default: 0.1)\n"
+              << "  --sh-degree <int>         Target SH degree 0-3 (default: keep original)\n"
               << "  --version                Show version\n"
               << "  --in-format <ext>         Override input format\n"
               << "  --out-format <ext>        Override output format\n"
@@ -124,6 +125,8 @@ int main(int argc, char** argv) {
                 options.merge_cap = std::stod(val);
             } else if (flag == "--prune-threshold") {
                 options.opacity_prune_threshold = std::stof(val);
+            } else if (flag == "--sh-degree") {
+                options.target_sh_degree = std::stoi(val);
             } else if (flag == "--in-format") {
                 in_ext = val;
             } else if (flag == "--out-format") {

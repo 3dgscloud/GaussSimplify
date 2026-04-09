@@ -141,6 +141,55 @@ ActivatedCloud activate_from_ir(const gf::GaussianCloudIR& ir) {
     return cloud;
 }
 
+// --- SH degree helpers ---
+
+int sh_degree_from_coeffs_per_channel(const int coeffs_per_channel) {
+    // per_channel = (d+1)^2 - 1, so d = sqrt(per_channel + 1) - 1
+    if (coeffs_per_channel <= 0) return 0;
+    const int d = static_cast<int>(std::sqrt(static_cast<double>(coeffs_per_channel) + 1.0) + 0.5) - 1;
+    // Verify: (d+1)^2 - 1 should equal coeffs_per_channel
+    if ((d + 1) * (d + 1) - 1 != coeffs_per_channel) return -1;  // Invalid
+    return d;
+}
+
+int sh_coeffs_per_channel_for_degree(const int degree) {
+    if (degree <= 0) return 0;
+    return (degree + 1) * (degree + 1) - 1;
+}
+
+void reduce_sh_degree(ActivatedCloud& cloud, const int target_degree) {
+    if (target_degree < 0) return;  // Don't change
+    if (cloud.sh.empty() || cloud.sh_coeffs_per_point <= 0) return;  // No SH to reduce
+
+    const int current_degree = sh_degree_from_coeffs_per_channel(cloud.sh_coeffs_per_point);
+    if (current_degree < 0 || target_degree >= current_degree) return;  // Can't upgrade or invalid
+
+    if (target_degree == 0) {
+        // Drop all SH data
+        cloud.sh.clear();
+        cloud.sh.shrink_to_fit();
+        cloud.sh_coeffs_per_point = 0;
+        return;
+    }
+
+    const int target_coeffs = sh_coeffs_per_channel_for_degree(target_degree);
+    const int target_dim = target_coeffs * 3;  // floats per point
+    const int current_dim = cloud.sh_coeffs_per_point * 3;
+
+    // Truncate each point's SH data in-place
+    const int32_t n = cloud.count;
+    std::vector<float> reduced(static_cast<size_t>(n) * static_cast<size_t>(target_dim));
+    for (int32_t i = 0; i < n; ++i) {
+        const size_t src_offset = static_cast<size_t>(i) * static_cast<size_t>(current_dim);
+        const size_t dst_offset = static_cast<size_t>(i) * static_cast<size_t>(target_dim);
+        std::copy_n(cloud.sh.begin() + static_cast<ptrdiff_t>(src_offset),
+                    target_dim,
+                    reduced.begin() + static_cast<ptrdiff_t>(dst_offset));
+    }
+    cloud.sh = std::move(reduced);
+    cloud.sh_coeffs_per_point = target_coeffs;
+}
+
 gf::GaussianCloudIR deactivate_to_ir(const ActivatedCloud& cloud, const gf::GaussMetadata& meta) {
     gf::GaussianCloudIR ir;
     const int32_t n = cloud.count;
@@ -167,6 +216,9 @@ gf::GaussianCloudIR deactivate_to_ir(const ActivatedCloud& cloud, const gf::Gaus
     for (const auto& ei : cloud.extras)
         ir.extras[ei.name] = ei.data;
     ir.meta = meta;
+    // Update shDegree to reflect actual SH content
+    ir.meta.shDegree = sh_degree_from_coeffs_per_channel(cloud.sh_coeffs_per_point);
+    if (ir.meta.shDegree < 0) ir.meta.shDegree = 0;
 
     return ir;
 }
@@ -581,6 +633,9 @@ gf::Expected<gf::GaussianCloudIR> simplify_impl(
         if (audit) {
             audit->original_count = input_count;
         }
+
+        // SH degree reduction (early, to save merge work)
+        reduce_sh_degree(current, options.target_sh_degree);
 
         // Opacity pruning
         if (!report_progress(progress, 0.05f, "Pruning opacity"))
