@@ -1,6 +1,6 @@
 {
     "name": "@gausssimplify/wasm",
-    "version": "0.1.1",
+    "version": "0.1.2",
     "type": "module",
     "description": "GaussSimplify WASM library for 3D Gaussian Splat simplification",
     "main": "dist/index.web.js",
