@@ -33,7 +33,7 @@ else()
     FetchContent_Declare(
         gauss_forge
         GIT_REPOSITORY https://github.com/3dgscloud/GaussForge.git
-        GIT_TAG        v0.5.4
+        GIT_TAG        v0.5.5
     )
 endif()
 FetchContent_MakeAvailable(gauss_forge)
