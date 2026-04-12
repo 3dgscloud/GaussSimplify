@@ -837,3 +837,148 @@ TEST(Simplify, SORWithAuditTrail) {
     EXPECT_EQ(audit.post_sor_count, output.numPoints);
     EXPECT_EQ(audit.final_count, output.numPoints);
 }
+
+// --- Keep Region tests ---
+
+TEST(Simplify, KeepRegionPreservesPointsInsideBox) {
+    // 6 points: 4 in a cluster at origin, 2 in a cluster at x=5
+    // Define keep_region around the origin cluster.
+    // Without keep_region, points in both clusters are equally likely to merge.
+    // With keep_region (high weight), origin cluster points are less likely to merge
+    // -> more points survive near origin.
+    const auto input = make_cloud({
+        // Origin cluster (4 points, tightly packed)
+        {.position = {0.0f, 0.0f, 0.0f}, .alpha = 0.9f},
+        {.position = {0.1f, 0.0f, 0.0f}, .alpha = 0.9f},
+        {.position = {0.0f, 0.1f, 0.0f}, .alpha = 0.9f},
+        {.position = {0.1f, 0.1f, 0.0f}, .alpha = 0.9f},
+        // Far cluster (2 points, tightly packed)
+        {.position = {5.0f, 0.0f, 0.0f}, .alpha = 0.9f},
+        {.position = {5.1f, 0.0f, 0.0f}, .alpha = 0.9f},
+    });
+
+    gs::SimplifyOptions options;
+    options.ratio = 0.5; // target 3 points
+    options.knn_k = 2;
+    options.merge_cap = 0.5;
+    options.opacity_prune_threshold = 0.0f;
+    options.keep_weight = 100.0f; // Very high: origin cluster almost never merges
+    options.keep_regions.push_back({-1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f});
+
+    const auto output = expect_ok(gs::simplify(input, options));
+
+    // With very high keep_weight, the 2 points at x=5 should merge (cost *1.0),
+    // while origin cluster points should survive (cost *100.0).
+    // Result: 4 origin + 1 merged far = 5... but target is 3, so more merges needed.
+    // The far cluster merges first, then some origin points merge too.
+    // But the origin cluster should still have more survivors than the far cluster.
+    ASSERT_EQ(output.numPoints, 3);
+
+    // Count survivors near origin vs far
+    int near_origin = 0;
+    int near_far = 0;
+    for (int i = 0; i < output.numPoints; ++i) {
+        const float x = output.positions[static_cast<size_t>(i) * 3];
+        if (x < 2.0f)
+            ++near_origin;
+        else
+            ++near_far;
+    }
+    // With high keep_weight, more survivors should be near origin than far
+    EXPECT_GT(near_origin, near_far);
+}
+
+TEST(Simplify, KeepRegionEmptyIsNoOp) {
+    // Same data, no keep_regions — should behave as before
+    const auto input = make_cloud({
+        {.position = {0.0f, 0.0f, 0.0f}, .alpha = 0.9f},
+        {.position = {0.1f, 0.0f, 0.0f}, .alpha = 0.9f},
+        {.position = {5.0f, 0.0f, 0.0f}, .alpha = 0.9f},
+        {.position = {5.1f, 0.0f, 0.0f}, .alpha = 0.9f},
+    });
+
+    gs::SimplifyOptions options;
+    options.ratio = 0.5;
+    options.knn_k = 1;
+    options.merge_cap = 0.5;
+    options.opacity_prune_threshold = 0.0f;
+    // keep_regions is empty by default
+
+    gs::SimplifyAuditTrail audit;
+    const auto output = expect_ok(gs::simplify_with_audit(input, audit, options));
+
+    EXPECT_EQ(output.numPoints, 2);
+    EXPECT_EQ(audit.final_count, 2);
+}
+
+TEST(Simplify, KeepRegionWeightOneIsNoOp) {
+    // keep_weight = 1.0 means no bias, same as no regions
+    const auto input = make_cloud({
+        {.position = {0.0f, 0.0f, 0.0f}, .alpha = 0.9f},
+        {.position = {0.1f, 0.0f, 0.0f}, .alpha = 0.9f},
+        {.position = {5.0f, 0.0f, 0.0f}, .alpha = 0.9f},
+        {.position = {5.1f, 0.0f, 0.0f}, .alpha = 0.9f},
+    });
+
+    gs::SimplifyOptions options_no_region;
+    options_no_region.ratio = 0.5;
+    options_no_region.knn_k = 1;
+    options_no_region.merge_cap = 0.5;
+    options_no_region.opacity_prune_threshold = 0.0f;
+
+    gs::SimplifyOptions options_with_region;
+    options_with_region.ratio = 0.5;
+    options_with_region.knn_k = 1;
+    options_with_region.merge_cap = 0.5;
+    options_with_region.opacity_prune_threshold = 0.0f;
+    options_with_region.keep_weight = 1.0f;
+    options_with_region.keep_regions.push_back({-1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f});
+
+    const auto out_no = expect_ok(gs::simplify(input, options_no_region));
+    const auto out_yes = expect_ok(gs::simplify(input, options_with_region));
+
+    // Both should produce same point count
+    EXPECT_EQ(out_no.numPoints, out_yes.numPoints);
+}
+
+TEST(Simplify, KeepRegionMultipleBoxes) {
+    // 8 points: 2 clusters, each protected by a separate box
+    const auto input = make_cloud({
+        // Cluster A: 2 points
+        {.position = {0.0f, 0.0f, 0.0f}, .alpha = 0.9f},
+        {.position = {0.1f, 0.0f, 0.0f}, .alpha = 0.9f},
+        // Cluster B: 2 points
+        {.position = {10.0f, 0.0f, 0.0f}, .alpha = 0.9f},
+        {.position = {10.1f, 0.0f, 0.0f}, .alpha = 0.9f},
+        // Unprotected: 4 points in middle
+        {.position = {5.0f, 0.0f, 0.0f}, .alpha = 0.9f},
+        {.position = {5.1f, 0.0f, 0.0f}, .alpha = 0.9f},
+        {.position = {5.0f, 0.1f, 0.0f}, .alpha = 0.9f},
+        {.position = {5.1f, 0.1f, 0.0f}, .alpha = 0.9f},
+    });
+
+    gs::SimplifyOptions options;
+    options.ratio = 0.5; // target 4
+    options.knn_k = 2;
+    options.merge_cap = 0.5;
+    options.opacity_prune_threshold = 0.0f;
+    options.keep_weight = 100.0f;
+    // Protect both clusters
+    options.keep_regions.push_back({-1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f});
+    options.keep_regions.push_back({9.0f, -1.0f, -1.0f, 11.0f, 1.0f, 1.0f});
+
+    const auto output = expect_ok(gs::simplify(input, options));
+    ASSERT_EQ(output.numPoints, 4);
+
+    // The 4 unprotected middle points should be preferentially merged.
+    // Count survivors in each region
+    int cluster_a = 0, cluster_b = 0, middle = 0;
+    for (int i = 0; i < output.numPoints; ++i) {
+        const float x = output.positions[static_cast<size_t>(i) * 3];
+        if (x < 2.0f) ++cluster_a;
+        else if (x > 8.0f) ++cluster_b;
+        else ++middle;
+    }
+    // Protected clusters should have more survivors than middle
+    EXPECT_GE(cluster_a + cluster_b, middle);
+}

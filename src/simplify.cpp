@@ -103,6 +103,26 @@ gf::Expected<gf::GaussianCloudIR> simplify_impl(
         }
 
         const int32_t target_count = target_count_for(input_count, options.ratio);
+
+        // Compute per-point region weights (keep_regions bias)
+        std::vector<float> point_weights;
+        if (!options.keep_regions.empty()) {
+            point_weights.resize(static_cast<size_t>(current.count), 1.0f);
+            for (int32_t idx = 0; idx < current.count; ++idx) {
+                const size_t i3 = static_cast<size_t>(idx) * 3;
+                const float px = current.positions[i3 + 0];
+                const float py = current.positions[i3 + 1];
+                const float pz = current.positions[i3 + 2];
+                for (const auto& box : options.keep_regions) {
+                    if (px >= box.min_x && px <= box.max_x &&
+                        py >= box.min_y && py <= box.max_y &&
+                        pz >= box.min_z && pz <= box.max_z) {
+                        point_weights[static_cast<size_t>(idx)] = options.keep_weight;
+                        break;
+                    }
+                }
+            }
+        }
         if (current.count <= target_count) {
             report_progress(progress, 1.0f, "Complete");
             auto ir = deactivate_to_ir(current, input.meta);
@@ -139,7 +159,7 @@ gf::Expected<gf::GaussianCloudIR> simplify_impl(
             // Compute edge costs
             if (!report_progress(progress, pass_progress + 0.01f, pass_prefix + "computing edge costs"))
                 return gf::MakeError("Cancelled");
-            compute_edge_costs(current, edges, costs);
+            compute_edge_costs(current, edges, point_weights, costs);
 
             // Select pairs
             if (!report_progress(progress, pass_progress + 0.02f, pass_prefix + "selecting pairs"))
@@ -159,6 +179,25 @@ gf::Expected<gf::GaussianCloudIR> simplify_impl(
                 return gf::MakeError("Cancelled");
             merge_pairs(current, pairs, used_rows, keep_idx, scratch);
             std::swap(current, scratch);
+
+            // Rebuild point_weights after merge (point indices change)
+            if (!options.keep_regions.empty()) {
+                point_weights.assign(static_cast<size_t>(current.count), 1.0f);
+                for (int32_t idx = 0; idx < current.count; ++idx) {
+                    const size_t i3 = static_cast<size_t>(idx) * 3;
+                    const float px = current.positions[i3 + 0];
+                    const float py = current.positions[i3 + 1];
+                    const float pz = current.positions[i3 + 2];
+                    for (const auto& box : options.keep_regions) {
+                        if (px >= box.min_x && px <= box.max_x &&
+                            py >= box.min_y && py <= box.max_y &&
+                            pz >= box.min_z && pz <= box.max_z) {
+                            point_weights[static_cast<size_t>(idx)] = options.keep_weight;
+                            break;
+                        }
+                    }
+                }
+            }
 
             // Record merges in audit trail
             if (audit) {

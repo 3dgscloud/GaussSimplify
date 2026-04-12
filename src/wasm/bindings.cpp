@@ -225,7 +225,8 @@ public:
     val simplify(val jsIR,
                  double ratio, int knn_k, double merge_cap,
                  float opacity_prune_threshold, int target_sh_degree,
-                 int sor_nb_neighbors, float sor_std_ratio) {
+                 int sor_nb_neighbors, float sor_std_ratio,
+                 float keep_weight, val keep_regions_flat) {
         try {
             gf::GaussianCloudIR ir = jsToGaussIR(jsIR);
 
@@ -237,6 +238,21 @@ public:
             opts.target_sh_degree = target_sh_degree;
             opts.sor_nb_neighbors = sor_nb_neighbors;
             opts.sor_std_ratio = sor_std_ratio;
+            opts.keep_weight = keep_weight;
+
+            // Parse keep_regions from flat Float32Array [min_x,min_y,min_z,max_x,max_y,max_z, ...]
+            if (!keep_regions_flat.isUndefined() && !keep_regions_flat.isNull()) {
+                auto flat = convertJSArrayToNumberVector<float>(keep_regions_flat);
+                const size_t num_boxes = flat.size() / 6;
+                opts.keep_regions.reserve(num_boxes);
+                for (size_t b = 0; b < num_boxes; ++b) {
+                    const size_t off = b * 6;
+                    opts.keep_regions.push_back({
+                        flat[off + 0], flat[off + 1], flat[off + 2],
+                        flat[off + 3], flat[off + 4], flat[off + 5]
+                    });
+                }
+            }
 
             // No progress callback -- runs synchronously in WASM
             auto result = gs::simplify(ir, opts, {});

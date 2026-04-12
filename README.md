@@ -18,6 +18,7 @@ A high-performance 3D Gaussian Splat simplification library. Reduces point count
 
 - **Opacity Pruning** — Removes low-opacity gaussians before merging
 - **Statistical Outlier Removal (SOR)** — Removes spatially isolated "flyer" gaussians that opacity pruning cannot catch
+- **Region-Aware Simplification** — Preserve quality in user-specified AABB regions via cost weighting
 - **kNN Merge Graph** — Builds a k-nearest-neighbor graph to find optimal merge candidates
 - **Moment Matching** — Merges pairs by matching mean and covariance (position, scale, rotation)
 - **SH Degree Reduction** — Optionally reduce spherical harmonics degree to save memory
@@ -70,6 +71,8 @@ Dependencies (auto-fetched via FetchContent):
 | `--prune-threshold <float>` | 0.1 | Opacity pruning threshold |
 | `--sor-nb <int>` | 0 | SOR: kNN neighbors (0=disabled) |
 | `--sor-std <float>` | 2.0 | SOR: std multiplier threshold |
+| `--keep-region <x>,<y>,<z>,<x2>,<y2>,<z2>` | — | AABB region to preserve (repeatable) |
+| `--keep-weight <float>` | 3.0 | Region cost multiplier (1.0 = no bias) |
 | `--sh-degree <int>` | keep | Target SH degree (0-3) |
 | `--in-format <ext>` | auto | Override input format |
 | `--out-format <ext>` | auto | Override output format |

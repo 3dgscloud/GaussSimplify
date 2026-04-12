@@ -21,7 +21,8 @@ export interface GaussSimplifyWASMInstance {
     read(data: Uint8Array, format: string, strict: boolean): any;
     simplify(ir: any, ratio: number, knn_k: number, merge_cap: number,
              opacity_prune_threshold: number, target_sh_degree: number,
-             sor_nb_neighbors: number, sor_std_ratio: number): any;
+             sor_nb_neighbors: number, sor_std_ratio: number,
+             keep_weight: number, keep_regions_flat: Float32Array | null): any;
     write(ir: any, format: string, strict: boolean): any;
     getModelInfo(ir: any): any;
     getSupportedFormats(): string[];
@@ -83,6 +84,24 @@ export abstract class GaussSimplifyBase {
 
     async simplify(ir: GaussianCloudIR, options: SimplifyOptions = {}): Promise<ReadResult> {
         this.ensureInitialized();
+
+        // Flatten keep_regions to Float32Array for WASM transfer
+        let keepRegionsFlat: Float32Array | null = null;
+        if (options.keep_regions && options.keep_regions.length > 0) {
+            const flat = new Float32Array(options.keep_regions.length * 6);
+            for (let i = 0; i < options.keep_regions.length; i++) {
+                const r = options.keep_regions[i];
+                const off = i * 6;
+                flat[off + 0] = r.min_x;
+                flat[off + 1] = r.min_y;
+                flat[off + 2] = r.min_z;
+                flat[off + 3] = r.max_x;
+                flat[off + 4] = r.max_y;
+                flat[off + 5] = r.max_z;
+            }
+            keepRegionsFlat = flat;
+        }
+
         const result = this.instance!.simplify(
             ir,
             options.ratio ?? 0.1,
@@ -91,7 +110,9 @@ export abstract class GaussSimplifyBase {
             options.opacity_prune_threshold ?? 0.1,
             options.target_sh_degree ?? -1,
             options.sor_nb_neighbors ?? 0,
-            options.sor_std_ratio ?? 2.0
+            options.sor_std_ratio ?? 2.0,
+            options.keep_weight ?? 3.0,
+            keepRegionsFlat
         );
         if (result.error) throw new Error(result.error);
         return { data: result.data } as ReadResult;

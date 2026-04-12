@@ -115,6 +115,17 @@ Simplify a `GaussianCloudIR`.
 | `target_sh_degree` | `number` | -1 | SH degree (-1 = keep original) |
 | `sor_nb_neighbors` | `number` | 0 | SOR: kNN neighbors, 0 = disabled |
 | `sor_std_ratio` | `number` | 2.0 | SOR: std multiplier threshold |
+| `keep_weight` | `number` | 3.0 | Region cost multiplier (1.0 = no bias, >1 protects regions) |
+| `keep_regions` | `AABBRegion[]` | [] | Regions to preserve |
+
+#### `AABBRegion`
+
+```typescript
+interface AABBRegion {
+    min_x: number; min_y: number; min_z: number;
+    max_x: number; max_y: number; max_z: number;
+}
+```
 
 ### `api.write(ir, format, options?)` → `Promise<WriteResult>`
 

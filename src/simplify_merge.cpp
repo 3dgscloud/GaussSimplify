@@ -62,13 +62,20 @@ float compute_edge_cost_euclidean(const ActivatedCloud& cloud, const int i, cons
 
 void compute_edge_costs(const ActivatedCloud& cloud,
                         const std::vector<std::pair<int, int>>& edges,
+                        const std::vector<float>& point_weights,
                         std::vector<float>& costs) {
     costs.assign(edges.size(), std::numeric_limits<float>::infinity());
+    const bool has_weights = !point_weights.empty();
 
     #pragma omp parallel for schedule(static)
     for (size_t i = 0; i < edges.size(); ++i) {
         const auto [u, v] = edges[i];
-        costs[i] = compute_edge_cost_euclidean(cloud, u, v);
+        float cost = compute_edge_cost_euclidean(cloud, u, v);
+        if (has_weights) {
+            cost *= 0.5f * (point_weights[static_cast<size_t>(u)] +
+                            point_weights[static_cast<size_t>(v)]);
+        }
+        costs[i] = cost;
     }
 }
 

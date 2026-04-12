@@ -14,6 +14,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -66,6 +67,9 @@ void PrintUsage() {
               << "  --sh-degree <int>         Target SH degree 0-3 (default: keep original)\n"
               << "  --sor-nb <int>            SOR: kNN neighbors, 0=disabled (default: 0)\n"
               << "  --sor-std <float>         SOR: std multiplier threshold (default: 2.0)\n"
+              << "  --keep-region <x>,<y>,<z>,<x2>,<y2>,<z2>\n"
+              << "                            AABB region to preserve (repeatable)\n"
+              << "  --keep-weight <float>     Region weight multiplier (default: 3.0)\n"
               << "  --version                Show version\n"
               << "  --in-format <ext>         Override input format\n"
               << "  --out-format <ext>        Override output format\n"
@@ -133,6 +137,24 @@ int main(int argc, char** argv) {
                 options.sor_nb_neighbors = std::stoi(val);
             } else if (flag == "--sor-std") {
                 options.sor_std_ratio = std::stof(val);
+            } else if (flag == "--keep-region") {
+                // Parse "min_x,min_y,min_z,max_x,max_y,max_z"
+                std::istringstream iss(val);
+                std::string token;
+                std::vector<float> coords;
+                while (std::getline(iss, token, ',')) {
+                    coords.push_back(std::stof(token));
+                }
+                if (coords.size() != 6) {
+                    std::cerr << "Error: --keep-region requires 6 comma-separated values (min_x,min_y,min_z,max_x,max_y,max_z)\n";
+                    return 1;
+                }
+                options.keep_regions.push_back({
+                    coords[0], coords[1], coords[2],
+                    coords[3], coords[4], coords[5]
+                });
+            } else if (flag == "--keep-weight") {
+                options.keep_weight = std::stof(val);
             } else if (flag == "--in-format") {
                 in_ext = val;
             } else if (flag == "--out-format") {

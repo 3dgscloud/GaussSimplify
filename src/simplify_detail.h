@@ -86,6 +86,7 @@ void build_cache(const ActivatedCloud& cloud, std::vector<CacheEntry>& cache);
 float compute_edge_cost_euclidean(const ActivatedCloud& cloud, int i, int j);
 void compute_edge_costs(const ActivatedCloud& cloud,
                         const std::vector<std::pair<int, int>>& edges,
+                        const std::vector<float>& point_weights,
                         std::vector<float>& costs);
 
 void greedy_pairs_from_edges(const std::vector<std::pair<int, int>>& edges,

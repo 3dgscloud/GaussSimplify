@@ -19,6 +19,17 @@ export interface GaussianCloudIR {
     meta: GaussMetadata;
 }
 
+export interface AABBRegion {
+    /** Minimum corner of the axis-aligned bounding box */
+    min_x: number;
+    min_y: number;
+    min_z: number;
+    /** Maximum corner of the axis-aligned bounding box */
+    max_x: number;
+    max_y: number;
+    max_z: number;
+}
+
 export interface SimplifyOptions {
     ratio?: number;                    // Target ratio (default: 0.1)
     knn_k?: number;                    // kNN neighbors (default: 16)
@@ -27,6 +38,8 @@ export interface SimplifyOptions {
     target_sh_degree?: number;         // Target SH degree, -1 = keep original (default: -1)
     sor_nb_neighbors?: number;         // Statistical outlier removal: kNN neighbors, 0 = disabled (default: 0)
     sor_std_ratio?: number;            // Statistical outlier removal: std multiplier threshold (default: 2.0)
+    keep_weight?: number;              // Region weight: points inside keep_regions are this much less likely to merge (default: 3.0)
+    keep_regions?: AABBRegion[];       // Regions to preserve (empty = no region bias)
 }
 
 export interface ReadResult {
