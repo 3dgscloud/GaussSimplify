@@ -20,7 +20,8 @@ export interface EmscriptenModule {
 export interface GaussSimplifyWASMInstance {
     read(data: Uint8Array, format: string, strict: boolean): any;
     simplify(ir: any, ratio: number, knn_k: number, merge_cap: number,
-             opacity_prune_threshold: number, target_sh_degree: number): any;
+             opacity_prune_threshold: number, target_sh_degree: number,
+             sor_nb_neighbors: number, sor_std_ratio: number): any;
     write(ir: any, format: string, strict: boolean): any;
     getModelInfo(ir: any): any;
     getSupportedFormats(): string[];
@@ -88,7 +89,9 @@ export abstract class GaussSimplifyBase {
             options.knn_k ?? 16,
             options.merge_cap ?? 0.5,
             options.opacity_prune_threshold ?? 0.1,
-            options.target_sh_degree ?? -1
+            options.target_sh_degree ?? -1,
+            options.sor_nb_neighbors ?? 0,
+            options.sor_std_ratio ?? 2.0
         );
         if (result.error) throw new Error(result.error);
         return { data: result.data } as ReadResult;

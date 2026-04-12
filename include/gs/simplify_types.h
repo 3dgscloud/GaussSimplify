@@ -16,6 +16,8 @@ struct SimplifyOptions {
     double merge_cap = 0.5;                // Max fraction of points merged per pass (0.01-0.5)
     float opacity_prune_threshold = 0.1f;  // Opacity pruning threshold
     int target_sh_degree = -1;             // Target SH degree (-1=keep, 0-3=reduce)
+    int sor_nb_neighbors = 0;              // Statistical outlier removal: kNN neighbors (0=disabled)
+    float sor_std_ratio = 2.0f;            // Statistical outlier removal: std multiplier threshold
 };
 
 using ProgressCallback = std::function<bool(float progress, const std::string& stage)>;
@@ -29,6 +31,8 @@ struct MergeRecord {
 struct SimplifyAuditTrail {
     int32_t original_count = 0;
     int32_t post_prune_count = 0;
+    int32_t post_sor_count = 0;
+    int32_t sor_removed = 0;
     int32_t final_count = 0;
     std::vector<int32_t> prune_survivor_ids;
     std::vector<MergeRecord> merges;

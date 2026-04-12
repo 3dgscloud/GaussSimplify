@@ -25,6 +25,8 @@ export interface SimplifyOptions {
     merge_cap?: number;                // Max fraction merged per pass (default: 0.5)
     opacity_prune_threshold?: number;  // Opacity pruning threshold (default: 0.1)
     target_sh_degree?: number;         // Target SH degree, -1 = keep original (default: -1)
+    sor_nb_neighbors?: number;         // Statistical outlier removal: kNN neighbors, 0 = disabled (default: 0)
+    sor_std_ratio?: number;            // Statistical outlier removal: std multiplier threshold (default: 2.0)
 }
 
 export interface ReadResult {

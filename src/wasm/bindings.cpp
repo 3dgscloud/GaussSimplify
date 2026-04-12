@@ -224,7 +224,8 @@ public:
 
     val simplify(val jsIR,
                  double ratio, int knn_k, double merge_cap,
-                 float opacity_prune_threshold, int target_sh_degree) {
+                 float opacity_prune_threshold, int target_sh_degree,
+                 int sor_nb_neighbors, float sor_std_ratio) {
         try {
             gf::GaussianCloudIR ir = jsToGaussIR(jsIR);
 
@@ -234,6 +235,8 @@ public:
             opts.merge_cap = merge_cap;
             opts.opacity_prune_threshold = opacity_prune_threshold;
             opts.target_sh_degree = target_sh_degree;
+            opts.sor_nb_neighbors = sor_nb_neighbors;
+            opts.sor_std_ratio = sor_std_ratio;
 
             // No progress callback -- runs synchronously in WASM
             auto result = gs::simplify(ir, opts, {});

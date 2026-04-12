@@ -721,3 +721,119 @@ TEST(Simplify, SHReductionWithMergePreservesCorrectDegree) {
     const int sh1_per_point = gf::ShCoeffsPerPoint(1);  // 9
     ASSERT_EQ(output.sh.size(), static_cast<size_t>(sh1_per_point));
 }
+
+// --- Statistical Outlier Removal tests ---
+
+TEST(Simplify, SORRemovesIsolatedPoints) {
+    // Create 50 dense points in a tight cluster, plus 3 isolated outliers far away
+    std::vector<PointSpec> points;
+
+    // Dense cluster: 50 points in a grid
+    for (int i = 0; i < 50; ++i) {
+        const float x = static_cast<float>(i % 5) * 0.1f;
+        const float y = static_cast<float>((i / 5) % 5) * 0.1f;
+        const float z = static_cast<float>(i / 25) * 0.1f;
+        points.push_back({.position = {x, y, z}, .alpha = 0.9f});
+    }
+
+    // 3 isolated outliers very far from the cluster
+    points.push_back({.position = {500.0f, 500.0f, 500.0f}, .alpha = 0.9f});
+    points.push_back({.position = {-500.0f, -500.0f, -500.0f}, .alpha = 0.9f});
+    points.push_back({.position = {0.0f, 0.0f, 500.0f}, .alpha = 0.9f});
+
+    auto input = make_cloud(points);
+
+    gs::SimplifyOptions options;
+    options.ratio = 1.0;  // No simplification, just SOR
+    options.opacity_prune_threshold = 0.0f;
+    options.sor_nb_neighbors = 5;
+    options.sor_std_ratio = 2.0f;
+
+    auto output = expect_ok(gs::simplify(input, options));
+
+    // Should have removed the 3 outliers, keeping 50 dense points
+    EXPECT_EQ(output.numPoints, 50);
+}
+
+TEST(Simplify, SORDisabledByDefault) {
+    // Same data as above, but without SOR enabled
+    std::vector<PointSpec> points;
+    for (int i = 0; i < 10; ++i) {
+        points.push_back({.position = {static_cast<float>(i) * 0.1f, 0.0f, 0.0f}, .alpha = 0.9f});
+    }
+    points.push_back({.position = {100.0f, 100.0f, 100.0f}, .alpha = 0.9f});
+
+    auto input = make_cloud(points);
+
+    gs::SimplifyOptions options;
+    options.ratio = 1.0;
+    options.opacity_prune_threshold = 0.0f;
+    // sor_nb_neighbors = 0 by default (disabled)
+
+    auto output = expect_ok(gs::simplify(input, options));
+
+    // Outlier should NOT be removed
+    EXPECT_EQ(output.numPoints, 11);
+}
+
+TEST(Simplify, SORPreservesAllAttributes) {
+    // Create points with extras, verify SOR preserves them
+    std::vector<PointSpec> points;
+    for (int i = 0; i < 10; ++i) {
+        points.push_back({
+            .position = {static_cast<float>(i) * 0.1f, 0.0f, 0.0f},
+            .color = {static_cast<float>(i) / 10.0f, 0.5f, 0.2f},
+            .alpha = 0.8f
+        });
+    }
+    // One outlier
+    points.push_back({.position = {50.0f, 50.0f, 50.0f}, .color = {1.0f, 1.0f, 1.0f}, .alpha = 0.8f});
+
+    // Extra scalar per point
+    std::vector<float> extras(points.size());
+    for (size_t i = 0; i < extras.size(); ++i)
+        extras[i] = static_cast<float>(i) * 1.5f;
+
+    auto input = make_cloud(points, extras);
+
+    gs::SimplifyOptions options;
+    options.ratio = 1.0;
+    options.opacity_prune_threshold = 0.0f;
+    options.sor_nb_neighbors = 5;
+    options.sor_std_ratio = 2.0f;
+
+    auto output = expect_ok(gs::simplify(input, options));
+
+    EXPECT_EQ(output.numPoints, 10);
+    // Verify colors preserved
+    EXPECT_FALSE(output.colors.empty());
+    EXPECT_EQ(output.colors.size(), static_cast<size_t>(10 * 3));
+    // Verify extras preserved
+    ASSERT_TRUE(output.extras.count("feature") > 0);
+    EXPECT_EQ(output.extras["feature"].size(), static_cast<size_t>(10));
+}
+
+TEST(Simplify, SORWithAuditTrail) {
+    std::vector<PointSpec> points;
+    for (int i = 0; i < 30; ++i) {
+        points.push_back({.position = {static_cast<float>(i % 5) * 0.1f,
+                                        static_cast<float>(i / 5) * 0.1f, 0.0f}, .alpha = 0.9f});
+    }
+    points.push_back({.position = {500.0f, 0.0f, 0.0f}, .alpha = 0.9f});
+
+    auto input = make_cloud(points);
+
+    gs::SimplifyOptions options;
+    options.ratio = 1.0;
+    options.opacity_prune_threshold = 0.0f;
+    options.sor_nb_neighbors = 5;
+    options.sor_std_ratio = 1.5f;
+
+    gs::SimplifyAuditTrail audit;
+    auto output = expect_ok(gs::simplify_with_audit(input, audit, options));
+
+    EXPECT_EQ(audit.original_count, 31);
+    EXPECT_GT(audit.sor_removed, 0);
+    EXPECT_EQ(audit.post_sor_count, output.numPoints);
+    EXPECT_EQ(audit.final_count, output.numPoints);
+}
