@@ -982,3 +982,118 @@ TEST(Simplify, KeepRegionMultipleBoxes) {
     // Protected clusters should have more survivors than middle
     EXPECT_GE(cluster_a + cluster_b, middle);
 }
+
+TEST(Simplify, SORWithKeepRegion) {
+    // SOR removes outliers first, then keep_region biases merging.
+    // Combined pipeline should work correctly.
+    std::vector<PointSpec> points;
+
+    // Dense cluster: 10 points near origin
+    for (int i = 0; i < 10; ++i) {
+        points.push_back({
+            .position = {static_cast<float>(i % 3) * 0.1f,
+                         static_cast<float>(i / 3) * 0.1f, 0.0f},
+            .alpha = 0.9f
+        });
+    }
+
+    // Dense cluster: 10 points at x=10
+    for (int i = 0; i < 10; ++i) {
+        points.push_back({
+            .position = {10.0f + static_cast<float>(i % 3) * 0.1f,
+                         static_cast<float>(i / 3) * 0.1f, 0.0f},
+            .alpha = 0.9f
+        });
+    }
+
+    // 2 SOR outliers far away (should be removed by SOR)
+    points.push_back({.position = {500.0f, 500.0f, 500.0f}, .alpha = 0.9f});
+    points.push_back({.position = {-500.0f, -500.0f, -500.0f}, .alpha = 0.9f});
+
+    auto input = make_cloud(points);
+
+    gs::SimplifyOptions options;
+    options.ratio = 0.3;       // target ~7 points from 22 input
+    options.knn_k = 3;
+    options.merge_cap = 0.5;
+    options.opacity_prune_threshold = 0.0f;
+    options.sor_nb_neighbors = 5;
+    options.sor_std_ratio = 2.0f;
+    options.keep_weight = 100.0f;
+    // Protect origin cluster
+    options.keep_regions.push_back({-1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f});
+
+    gs::SimplifyAuditTrail audit;
+    const auto output = expect_ok(gs::simplify_with_audit(input, audit, options));
+
+    // SOR should have removed 2 outliers
+    EXPECT_EQ(audit.sor_removed, 2);
+    EXPECT_EQ(audit.post_sor_count, 20);
+
+    // Final count should be ~7
+    EXPECT_GT(output.numPoints, 0);
+    EXPECT_LE(output.numPoints, 20);
+
+    // Origin cluster should have more survivors than far cluster
+    int near_origin = 0, near_far = 0;
+    for (int i = 0; i < output.numPoints; ++i) {
+        const float x = output.positions[static_cast<size_t>(i) * 3];
+        if (x < 2.0f) ++near_origin;
+        else if (x > 8.0f) ++near_far;
+    }
+    EXPECT_GT(near_origin, near_far);
+
+    const auto validation = gf::ValidateBasic(output, true);
+    EXPECT_TRUE(validation.message.empty()) << validation.message;
+}
+
+TEST(Simplify, KeepRegionMergedPointMovesAcrossBoundary) {
+    // Points A and B are near the box edge. When merged, the resulting point
+    // may be outside the box. Next pass should correctly re-evaluate its weight.
+    // Box covers x < 0.5. Points at x=0.0 and x=0.4 merge to ~x=0.2 (inside).
+    // Points at x=0.6 and x=1.0 merge to ~x=0.8 (outside).
+    // With high keep_weight, inside pairs should merge last.
+    const auto input = make_cloud({
+        // Inside box (4 points, spread out)
+        {.position = {0.0f, 0.0f, 0.0f}, .alpha = 0.9f},
+        {.position = {0.1f, 0.0f, 0.0f}, .alpha = 0.9f},
+        {.position = {0.0f, 0.1f, 0.0f}, .alpha = 0.9f},
+        {.position = {0.1f, 0.1f, 0.0f}, .alpha = 0.9f},
+        // On box edge / just outside (2 pairs that will merge outside)
+        {.position = {0.6f, 0.0f, 0.0f}, .alpha = 0.9f},
+        {.position = {0.7f, 0.0f, 0.0f}, .alpha = 0.9f},
+        {.position = {5.0f, 0.0f, 0.0f}, .alpha = 0.9f},
+        {.position = {5.1f, 0.0f, 0.0f}, .alpha = 0.9f},
+    });
+
+    gs::SimplifyOptions options;
+    options.ratio = 0.5; // target 4
+    options.knn_k = 2;
+    options.merge_cap = 0.5;
+    options.opacity_prune_threshold = 0.0f;
+    options.keep_weight = 50.0f;
+    // Box: x in [0, 0.5]
+    options.keep_regions.push_back({0.0f, -1.0f, -1.0f, 0.5f, 1.0f, 1.0f});
+
+    gs::SimplifyAuditTrail audit;
+    const auto output = expect_ok(gs::simplify_with_audit(input, audit, options));
+
+    ASSERT_EQ(output.numPoints, 4);
+
+    // All 8 points passed opacity pruning
+    EXPECT_EQ(audit.post_prune_count, 8);
+    // Should have needed multiple merge passes
+    EXPECT_GE(audit.merges.size(), 4u);
+
+    // Count inside-box survivors
+    int inside = 0;
+    for (int i = 0; i < output.numPoints; ++i) {
+        const float x = output.positions[static_cast<size_t>(i) * 3];
+        if (x < 0.5f) ++inside;
+    }
+    // With high keep_weight, most inside-box points should survive
+    EXPECT_GE(inside, 2);
+
+    const auto validation = gf::ValidateBasic(output, true);
+    EXPECT_TRUE(validation.message.empty()) << validation.message;
+}
