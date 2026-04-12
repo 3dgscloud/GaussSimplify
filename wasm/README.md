@@ -113,6 +113,8 @@ Simplify a `GaussianCloudIR`.
 | `merge_cap` | `number` | 0.5 | Max fraction merged per pass |
 | `opacity_prune_threshold` | `number` | 0.1 | Remove gaussians below this opacity |
 | `target_sh_degree` | `number` | -1 | SH degree (-1 = keep original) |
+| `sor_nb_neighbors` | `number` | 0 | SOR: kNN neighbors, 0 = disabled |
+| `sor_std_ratio` | `number` | 2.0 | SOR: std multiplier threshold |
 
 ### `api.write(ir, format, options?)` → `Promise<WriteResult>`
 

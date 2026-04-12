@@ -17,6 +17,7 @@ A high-performance 3D Gaussian Splat simplification library. Reduces point count
 ## Features
 
 - **Opacity Pruning** — Removes low-opacity gaussians before merging
+- **Statistical Outlier Removal (SOR)** — Removes spatially isolated "flyer" gaussians that opacity pruning cannot catch
 - **kNN Merge Graph** — Builds a k-nearest-neighbor graph to find optimal merge candidates
 - **Moment Matching** — Merges pairs by matching mean and covariance (position, scale, rotation)
 - **SH Degree Reduction** — Optionally reduce spherical harmonics degree to save memory
@@ -67,6 +68,8 @@ Dependencies (auto-fetched via FetchContent):
 | `--knn <int>` | 16 | kNN neighbors for merge graph |
 | `--merge-cap <float>` | 0.5 | Max fraction merged per pass |
 | `--prune-threshold <float>` | 0.1 | Opacity pruning threshold |
+| `--sor-nb <int>` | 0 | SOR: kNN neighbors (0=disabled) |
+| `--sor-std <float>` | 2.0 | SOR: std multiplier threshold |
 | `--sh-degree <int>` | keep | Target SH degree (0-3) |
 | `--in-format <ext>` | auto | Override input format |
 | `--out-format <ext>` | auto | Override output format |
@@ -132,13 +135,17 @@ Powered by [GaussForge](https://github.com/3dgscloud/GaussForge).
 
 ```
 GaussSimplify/
-├── include/gs/        # Public headers (simplify.h, simplify_types.h)
+├── include/gs/              # Public headers (simplify.h, simplify_types.h)
 ├── src/
-│   ├── simplify.cpp   # Core simplification algorithm
-│   ├── simplify_knn.h # kNN graph construction (header-only)
-│   ├── simplify_math.h# Math utilities (header-only)
-│   ├── main.cpp       # CLI tool
-│   └── wasm/          # WebAssembly bindings
+│   ├── simplify.cpp         # Main pipeline + public API
+│   ├── simplify_activate.cpp # Activation, deactivation, SH, copy utilities
+│   ├── simplify_prune.cpp   # Opacity pruning + SOR
+│   ├── simplify_merge.cpp   # Merge algorithm (moment matching)
+│   ├── simplify_detail.h    # Shared internal types and declarations
+│   ├── simplify_knn.h       # kNN graph construction (header-only)
+│   ├── simplify_math.h      # Math utilities (header-only)
+│   ├── main.cpp             # CLI tool
+│   └── wasm/                # WebAssembly bindings
 ├── external/          # Third-party (nanoflann)
 ├── wasm/              # npm package (TypeScript wrapper)
 ├── cmakes/            # CMake config files

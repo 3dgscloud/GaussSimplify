@@ -92,6 +92,9 @@ endif()
 # --------------------------------------------------------
 add_library(gauss_simplify_lib STATIC
     src/simplify.cpp
+    src/simplify_activate.cpp
+    src/simplify_prune.cpp
+    src/simplify_merge.cpp
 )
 target_include_directories(gauss_simplify_lib PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
