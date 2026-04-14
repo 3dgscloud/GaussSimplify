@@ -175,6 +175,7 @@ cmake --build build --target simplify_benchmark
 ## Related Resources
 
 - [GaussForge](https://github.com/3dgscloud/GaussForge) — Gaussian Splatting format conversion library
+- [NanoGS](https://arxiv.org/abs/2603.16103)
 - [LichtFeld-Studio](https://github.com/MrNeRF/LichtFeld-Studio)
 
 ## License
